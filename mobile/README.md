@@ -1,18 +1,32 @@
 # AI Audio Guide — Flutter client
 
-Stage 0 skeleton: proves the WebSocket transport against the backend `/ws`.
-Sensors (GPS/compass), streaming audio playback, and mic/barge-in arrive in Stage 6.
+Thin WebSocket client for the backend: simulates a walk (sends positions),
+shows the guide's narration/replies, and lets you ask questions.
 
-## Requirements
-- Flutter SDK `>=3.4` (not yet installed in this environment — install from
-  https://docs.flutter.dev/get-started/install)
+## Status
+- ✅ **Web / Windows desktop** — runs now, no Android toolchain needed.
+- ⏳ **Mobile (Android/iOS)** — Stage 6b: real GPS + compass + mic. Needs Android
+  Studio + SDK (`flutter doctor` shows it as the only missing piece).
 
-## Run
+## Run (web)
+1. Start the backend (`../backend`) on `:8000`
+   — for the live model set `AGENT_BACKEND=openai` + LM Studio running.
+2. ```bash
+   cd mobile
+   flutter run -d chrome      # or: flutter run -d windows
+   ```
+3. In the app: **Подключиться** → **▶ Прогулка** → watch the narration; type a
+   question (e.g. "пропускай магазины") and **Спросить**.
+
+The WebSocket URL defaults to `ws://localhost:8000/ws` (editable in the app).
+
+## Checks
 ```bash
-cd mobile
-flutter pub get
-flutter run        # device or emulator
+flutter analyze
+flutter test
+flutter build web
 ```
 
-The backend must be running (`backend/`). On the Android emulator the host is
-reachable at `10.0.2.2`; the WS URL is set in `lib/main.dart` (`_wsUrl`).
+## Next (mobile)
+Replace the simulated walk with real sensors and add audio/mic; uncomment the
+plugins in `pubspec.yaml` (geolocator, flutter_compass, just_audio, record).
