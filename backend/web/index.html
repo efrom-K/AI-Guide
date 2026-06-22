@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Audio Guide — WS test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.2rem; }
+    #log { background: #111; color: #0f0; padding: .75rem; height: 260px; overflow: auto;
+           white-space: pre-wrap; border-radius: 6px; font-family: monospace; font-size: .85rem; }
+    button, input { font-size: 1rem; padding: .4rem .6rem; }
+    .row { display: flex; gap: .5rem; margin: .5rem 0; }
+    .dot { display:inline-block; width:.7rem; height:.7rem; border-radius:50%; background:#c00; }
+    .dot.on { background:#0c0; }
+  </style>
+</head>
+<body>
+  <h1>🎧 AI Audio Guide — WebSocket echo test</h1>
+  <p><span id="dot" class="dot"></span> <span id="status">disconnected</span></p>
+  <div class="row">
+    <button id="connect">Connect</button>
+    <button id="sendPos">Send position</button>
+    <input id="msg" placeholder="utterance text" />
+    <button id="sendMsg">Send utterance</button>
+  </div>
+  <div id="log"></div>
+
+  <script>
+    const log = (m) => {
+      const el = document.getElementById('log');
+      el.textContent += m + '\n';
+      el.scrollTop = el.scrollHeight;
+    };
+    let ws = null;
+    const setStatus = (s, on) => {
+      document.getElementById('status').textContent = s;
+      document.getElementById('dot').classList.toggle('on', !!on);
+    };
+
+    document.getElementById('connect').onclick = () => {
+      const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+      ws = new WebSocket(url);
+      ws.onopen = () => { setStatus('connected', true); log('· open'); };
+      ws.onclose = () => { setStatus('disconnected', false); log('· close'); };
+      ws.onerror = (e) => log('! error');
+      ws.onmessage = (e) => log('← ' + e.data);
+    };
+    const send = (obj) => {
+      if (!ws || ws.readyState !== 1) { log('! not connected'); return; }
+      ws.send(JSON.stringify(obj));
+      log('→ ' + JSON.stringify(obj));
+    };
+    document.getElementById('sendPos').onclick = () =>
+      send({ type: 'position', lat: 55.7558, lon: 37.6173, gaze_confidence: 'low', pace: 'slow' });
+    document.getElementById('sendMsg').onclick = () =>
+      send({ type: 'utterance', text: document.getElementById('msg').value || 'привет' });
+  </script>
+</body>
+</html>
