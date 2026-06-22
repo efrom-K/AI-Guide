@@ -168,6 +168,9 @@ class SessionState(BaseModel):
     conversation: list[str] = Field(default_factory=list)
     control_patch: ControlPatch = Field(default_factory=ControlPatch)
     current_radius_m: float = 80.0
+    last_place_id: str | None = None  # last narrated place (for switching detection)
+    last_candidate_fingerprint: str | None = None  # heuristic gate
+    state: str = "idle"  # FSM state name
 
 
 # --------------------------------------------------------------------------- #
