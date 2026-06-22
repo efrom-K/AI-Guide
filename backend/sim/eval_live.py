@@ -38,6 +38,11 @@ _LR = re.compile(r"\b(слева|справа|левее|правее|налев
 _MD = re.compile(r"(^\s*[-*#]\s)|(\]\(https?://)|(```)", re.MULTILINE)
 _CYR = re.compile(r"[а-яё]", re.IGNORECASE)
 _CLICHE = re.compile(r"(уникальн|сердце города|важная точка|не оставит равнодушн)", re.IGNORECASE)
+_INVENT = re.compile(r"(не подходи|не трогай|осторожн|остановись|не приближ)", re.IGNORECASE)
+_DATE = re.compile(
+    r"(век|столет|год|шестнадцат|семнадцат|восемнадцат|девятнадцат|двадцат|пятнадцат|\d{3,4})",
+    re.IGNORECASE,
+)
 
 
 def _place(pid, name, cat) -> Place:
@@ -99,6 +104,8 @@ async def main(n: int) -> None:
                 lambda _: _text_ok(narrator, _narr(), lambda t: t and not _MD.search(t)))
     await check("Narrator: без клише", range(n),
                 lambda _: _text_ok(narrator, _narr(), lambda t: not _CLICHE.search(t)))
+    await check("Narrator: без выдуманных инструкций", range(n),
+                lambda _: _text_ok(narrator, _narr(), lambda t: not _INVENT.search(t)))
     await check("Narrator: нет лево/право при low-gaze", range(n),
                 lambda _: _text_ok(narrator, _narr(), lambda t: not _LR.search(t)))
     await check("Narrator: [SILENCE] при nothing_new", range(n),
@@ -114,6 +121,8 @@ async def main(n: int) -> None:
     phrases = ["пропускай магазины", "давай покороче", "помолчи немного"]
     await check("Companion: извлекает control_patch", phrases,
                 lambda p: _companion_ok(companion, p))
+    await check("Companion: отвечает на 'когда'", range(n),
+                lambda _: _companion_answers_when(companion))
 
     print("\n=== Live eval (model: qwen via LM Studio) ===")
     for name, ok, total in results:
@@ -128,6 +137,14 @@ async def _scorer_ok(scorer, cands) -> bool:
 
 async def _text_ok(narrator, inp, predicate) -> bool:
     return bool(predicate(await narrator.narrate(inp)))
+
+
+async def _companion_answers_when(companion) -> bool:
+    narration = "Этот собор построили в середине шестнадцатого века по приказу Ивана Грозного."
+    out = await companion.respond(
+        CompanionInput(user_message="А когда его построили?", last_narration=narration)
+    )
+    return bool(out.reply and _DATE.search(out.reply))
 
 
 async def _companion_ok(companion, phrase) -> bool:
