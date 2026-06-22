@@ -3,58 +3,115 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI Audio Guide — WS test</title>
+  <title>AI Audio Guide — демо</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.2rem; }
-    #log { background: #111; color: #0f0; padding: .75rem; height: 260px; overflow: auto;
-           white-space: pre-wrap; border-radius: 6px; font-family: monospace; font-size: .85rem; }
-    button, input { font-size: 1rem; padding: .4rem .6rem; }
-    .row { display: flex; gap: .5rem; margin: .5rem 0; }
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 1.5rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; }
+    .row { display: flex; gap: .5rem; align-items: center; margin: .5rem 0; flex-wrap: wrap; }
+    button, input { font-size: 1rem; padding: .45rem .7rem; border-radius: 6px; border: 1px solid #ccc; }
+    button { cursor: pointer; }
+    #log { margin-top: 1rem; }
+    .msg { padding: .6rem .8rem; border-radius: 10px; margin: .4rem 0; max-width: 90%; }
+    .guide { background: #eef2ff; }
+    .reply { background: #ecfdf5; }
+    .you   { background: #f3f4f6; margin-left: auto; text-align: right; }
+    .meta  { color: #888; font-size: .8rem; }
+    .pill  { display:inline-block; padding:.1rem .5rem; border-radius:999px; background:#111; color:#fff; font-size:.75rem; }
     .dot { display:inline-block; width:.7rem; height:.7rem; border-radius:50%; background:#c00; }
     .dot.on { background:#0c0; }
   </style>
 </head>
 <body>
-  <h1>🎧 AI Audio Guide — WebSocket echo test</h1>
-  <p><span id="dot" class="dot"></span> <span id="status">disconnected</span></p>
+  <h1>🎧 AI Audio Guide — демо (Красная площадь)</h1>
   <div class="row">
-    <button id="connect">Connect</button>
-    <button id="sendPos">Send position</button>
-    <input id="msg" placeholder="utterance text" />
-    <button id="sendMsg">Send utterance</button>
+    <span id="dot" class="dot"></span> <span id="status">disconnected</span>
+    · состояние: <span id="state" class="pill">—</span>
+  </div>
+  <div class="row">
+    <button id="connect">Подключиться</button>
+    <button id="walk" disabled>▶ Прогулка</button>
+    <button id="stop" disabled>⏸ Стоп</button>
+  </div>
+  <div class="row">
+    <input id="msg" placeholder="Спросить гида… (например: пропускай магазины)" style="flex:1" />
+    <button id="ask" disabled>Спросить</button>
   </div>
   <div id="log"></div>
 
   <script>
-    const log = (m) => {
-      const el = document.getElementById('log');
-      el.textContent += m + '\n';
-      el.scrollTop = el.scrollHeight;
-    };
-    let ws = null;
+    // Red Square waypoints (lat, lon) — same route as the backend sim.
+    const ROUTE = [[55.7525,37.6231],[55.7537,37.6205],[55.7547,37.6196],[55.7553,37.6178]];
+    const STEP_M = 10, STEP_MS = 1200;
+
+    const log = document.getElementById('log');
+    const setState = (s) => document.getElementById('state').textContent = s;
     const setStatus = (s, on) => {
       document.getElementById('status').textContent = s;
       document.getElementById('dot').classList.toggle('on', !!on);
     };
+    const add = (cls, html) => {
+      const d = document.createElement('div'); d.className = 'msg ' + cls; d.innerHTML = html;
+      log.appendChild(d); window.scrollTo(0, document.body.scrollHeight);
+    };
+    const enable = (on) => ['walk','ask'].forEach(id => document.getElementById(id).disabled = !on);
+
+    // haversine + interpolation to build a dense point list
+    const R = 6371000, rad = d => d*Math.PI/180;
+    const dist = (a,b) => { const dl=rad(b[0]-a[0]),dn=rad(b[1]-a[1]),la1=rad(a[0]),la2=rad(b[0]);
+      const h=Math.sin(dl/2)**2+Math.cos(la1)*Math.cos(la2)*Math.sin(dn/2)**2; return 2*R*Math.asin(Math.sqrt(h)); };
+    const bearing = (a,b) => { const la1=rad(a[0]),la2=rad(b[0]),dn=rad(b[1]-a[1]);
+      const y=Math.sin(dn)*Math.cos(la2), x=Math.cos(la1)*Math.sin(la2)-Math.sin(la1)*Math.cos(la2)*Math.cos(dn);
+      return (Math.atan2(y,x)*180/Math.PI+360)%360; };
+    function buildPoints() {
+      const pts = [];
+      for (let i=0;i<ROUTE.length-1;i++) {
+        const a=ROUTE[i], b=ROUTE[i+1], len=dist(a,b), brg=bearing(a,b);
+        for (let t=0;t<len;t+=STEP_M) { const f=t/len;
+          pts.push({lat:a[0]+(b[0]-a[0])*f, lon:a[1]+(b[1]-a[1])*f, dir:brg}); }
+      }
+      pts.push({lat:ROUTE[ROUTE.length-1][0], lon:ROUTE[ROUTE.length-1][1], dir:0});
+      return pts;
+    }
+
+    let ws=null, timer=null, points=[], idx=0;
 
     document.getElementById('connect').onclick = () => {
-      const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+      const url = (location.protocol==='https:'?'wss://':'ws://') + location.host + '/ws';
       ws = new WebSocket(url);
-      ws.onopen = () => { setStatus('connected', true); log('· open'); };
-      ws.onclose = () => { setStatus('disconnected', false); log('· close'); };
-      ws.onerror = (e) => log('! error');
-      ws.onmessage = (e) => log('← ' + e.data);
+      ws.onopen = () => { setStatus('connected', true); enable(true); };
+      ws.onclose = () => { setStatus('disconnected', false); enable(false); stopWalk(); };
+      ws.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type==='state') setState(m.state);
+        else if (m.type==='narration') add('guide', '🗣 ' + m.text);
+        else if (m.type==='reply') add('reply', '💬 ' + m.text);
+        else if (m.type==='error') add('meta', '⚠ ' + m.message);
+      };
     };
-    const send = (obj) => {
-      if (!ws || ws.readyState !== 1) { log('! not connected'); return; }
-      ws.send(JSON.stringify(obj));
-      log('→ ' + JSON.stringify(obj));
+
+    function startWalk() {
+      points = buildPoints(); idx = 0;
+      document.getElementById('walk').disabled = true; document.getElementById('stop').disabled = false;
+      timer = setInterval(() => {
+        if (idx >= points.length) { stopWalk(); return; }
+        const p = points[idx++];
+        ws.send(JSON.stringify({type:'position', lat:p.lat, lon:p.lon, direction_deg:p.dir, gaze_confidence:'low', pace:'slow'}));
+      }, STEP_MS);
+    }
+    function stopWalk() {
+      if (timer) clearInterval(timer); timer = null;
+      document.getElementById('walk').disabled = false; document.getElementById('stop').disabled = true;
+    }
+    document.getElementById('walk').onclick = startWalk;
+    document.getElementById('stop').onclick = stopWalk;
+
+    document.getElementById('ask').onclick = () => {
+      const t = document.getElementById('msg').value.trim(); if (!t || !ws) return;
+      add('you', '🎙 ' + t);
+      ws.send(JSON.stringify({type:'utterance', text:t}));
+      document.getElementById('msg').value='';
     };
-    document.getElementById('sendPos').onclick = () =>
-      send({ type: 'position', lat: 55.7558, lon: 37.6173, gaze_confidence: 'low', pace: 'slow' });
-    document.getElementById('sendMsg').onclick = () =>
-      send({ type: 'utterance', text: document.getElementById('msg').value || 'привет' });
+    document.getElementById('msg').addEventListener('keydown', e => { if (e.key==='Enter') document.getElementById('ask').click(); });
   </script>
 </body>
 </html>

@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # Geo
     overpass_url: str = "https://overpass-api.de/api/interpreter"
 
+    # Wiring (which implementations the orchestrator factory builds)
+    agent_backend: str = "heuristic"  # heuristic | openai | anthropic
+    geo_source: str = "fixture"  # fixture | overpass
+    enrichment_source: str = "mock"  # mock | (websearch later)
+
     # Behaviour
     default_language: str = "ru"
     default_radius_m: float = 80.0
