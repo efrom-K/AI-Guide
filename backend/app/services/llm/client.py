@@ -172,18 +172,19 @@ class OpenAICompatLLM:
         *,
         max_tokens: int = 1024,
     ) -> dict[str, Any]:
-        guard = user + "\n\nВерни ТОЛЬКО валидный JSON по схеме, без markdown и пояснений."
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": "output", "strict": True, "schema": schema},
+        }
         text = await self._chat(
-            role, system, guard, max_tokens,
-            temperature=0,
-            response_format={"type": "json_object"},
+            role, system, user, max_tokens, temperature=0, response_format=response_format
         )
         try:
             return _parse_json(text)
         except json.JSONDecodeError:
-            # one repair attempt
-            repair = f"{guard}\n\nПредыдущий ответ был невалидным JSON. Верни строго валидный JSON."
-            text = await self._chat(role, system, repair, max_tokens, temperature=0)
+            # safety net: re-ask in plain text mode with an explicit instruction
+            guard = f"{user}\n\nВерни строго валидный JSON по схеме, без markdown."
+            text = await self._chat(role, system, guard, max_tokens, temperature=0)
             return _parse_json(text)
 
     async def aclose(self) -> None:
