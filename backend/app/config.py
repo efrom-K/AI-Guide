@@ -19,6 +19,17 @@ class Settings(BaseSettings):
     model_companion: str = "claude-sonnet-4-6"
     model_landmark: str = "claude-opus-4-8"
 
+    # OpenAI-compatible provider (LM Studio / OpenRouter / etc.)
+    #   LM Studio:  OPENAI_BASE_URL=http://localhost:1234/v1  OPENAI_API_KEY=lm-studio
+    #   OpenRouter: OPENAI_BASE_URL=https://openrouter.ai/api/v1  OPENAI_API_KEY=sk-or-...
+    openai_base_url: str = "http://localhost:1234/v1"
+    openai_api_key: str = ""
+    openai_model: str = ""  # default model for every role
+    openai_model_scorer: str = ""  # optional per-role override (else openai_model)
+    openai_model_narrator: str = ""
+    openai_model_companion: str = ""
+    openai_model_landmark: str = ""
+
     # Geo
     overpass_url: str = "https://overpass-api.de/api/interpreter"
 

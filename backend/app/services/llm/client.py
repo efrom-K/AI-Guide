@@ -11,11 +11,18 @@ API key; real narration quality is exercised with a key via ``AnthropicLLM``.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Protocol
 
 from app.config import settings
 
 from .router import Role, model_for
+
+_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+
+
+def _parse_json(text: str) -> dict[str, Any]:
+    return json.loads(_FENCE.sub("", text).strip())
 
 
 class LLMClient(Protocol):
@@ -101,3 +108,83 @@ class FakeLLM:
         max_tokens: int = 1024,
     ) -> dict[str, Any]:
         return self._json(role, system, user) if callable(self._json) else self._json
+
+
+class OpenAICompatLLM:
+    """Any OpenAI-compatible /chat/completions endpoint — LM Studio, OpenRouter,
+    vLLM, etc. One impl covers local (free) and cloud providers."""
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        default_model: str | None = None,
+    ) -> None:
+        import httpx
+
+        self._url = (base_url or settings.openai_base_url).rstrip("/") + "/chat/completions"
+        self._default = default_model or settings.openai_model
+        self._client = httpx.AsyncClient(
+            timeout=90.0,
+            headers={
+                "Authorization": f"Bearer {api_key or settings.openai_api_key}",
+                "X-Title": "AI Audio Guide",
+            },
+        )
+
+    def _model_for(self, role: Role) -> str:
+        override = {
+            Role.SCORER: settings.openai_model_scorer,
+            Role.NARRATOR: settings.openai_model_narrator,
+            Role.LANDMARK: settings.openai_model_landmark,
+            Role.COMPANION: settings.openai_model_companion,
+        }[role]
+        model = override or self._default
+        if not model:
+            raise RuntimeError("No OpenAI-compatible model configured (set OPENAI_MODEL)")
+        return model
+
+    async def _chat(self, role: Role, system: str, user: str, max_tokens: int, **extra) -> str:
+        payload: dict[str, Any] = {
+            "model": self._model_for(role),
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": max_tokens,
+            **extra,
+        }
+        resp = await self._client.post(self._url, json=payload)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+
+    async def complete_text(
+        self, role: Role, system: str, user: str, *, max_tokens: int = 1024
+    ) -> str:
+        return await self._chat(role, system, user, max_tokens, temperature=0.8)
+
+    async def complete_json(
+        self,
+        role: Role,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        *,
+        max_tokens: int = 1024,
+    ) -> dict[str, Any]:
+        guard = user + "\n\nВерни ТОЛЬКО валидный JSON по схеме, без markdown и пояснений."
+        text = await self._chat(
+            role, system, guard, max_tokens,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        try:
+            return _parse_json(text)
+        except json.JSONDecodeError:
+            # one repair attempt
+            repair = f"{guard}\n\nПредыдущий ответ был невалидным JSON. Верни строго валидный JSON."
+            text = await self._chat(role, system, repair, max_tokens, temperature=0)
+            return _parse_json(text)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()

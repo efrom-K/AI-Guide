@@ -38,6 +38,11 @@ def build_pipeline(use_llm: str | None) -> TextPipeline:
 
         llm = AnthropicLLM()
         return TextPipeline(LLMScorer(llm), LLMNarrator(llm), enricher)
+    if use_llm == "openai":
+        from app.services.llm.client import OpenAICompatLLM
+
+        llm = OpenAICompatLLM()
+        return TextPipeline(LLMScorer(llm), LLMNarrator(llm), enricher)
     return TextPipeline(HeuristicScorer(), TemplateNarrator(), enricher)
 
 
@@ -84,5 +89,5 @@ def out_is_new(result, last_place_id: str) -> bool:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--llm", choices=["anthropic"], default=None)
+    ap.add_argument("--llm", choices=["anthropic", "openai"], default=None)
     asyncio.run(main(ap.parse_args().llm))

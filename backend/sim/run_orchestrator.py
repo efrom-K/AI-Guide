@@ -8,6 +8,7 @@ Shows FSM states, memory-backed dedup, adaptive radius, the heuristic gate
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import sys
 from pathlib import Path
@@ -15,11 +16,11 @@ from pathlib import Path
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from app.services.agent.companion import HeuristicCompanion
-from app.services.agent.narrator import TemplateNarrator
+from app.services.agent.companion import HeuristicCompanion, LLMCompanion
+from app.services.agent.narrator import LLMNarrator, TemplateNarrator
 from app.services.agent.orchestrator import Orchestrator
 from app.services.agent.pipeline import TextPipeline
-from app.services.agent.scorer import HeuristicScorer
+from app.services.agent.scorer import HeuristicScorer, LLMScorer
 from app.services.enrichment.enricher import MockEnricher
 from app.services.geo.discovery import Discovery
 from app.services.geo.providers import StaticPlaceProvider
@@ -31,14 +32,26 @@ _FIX = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 _BARGE_IN_AT = 40.0  # seconds into the walk
 
 
-async def main() -> None:
+def _build(use_llm: str | None):
+    enricher = MockEnricher.from_json(_FIX / "facts_red_square.json")
+    if use_llm in ("anthropic", "openai"):
+        if use_llm == "anthropic":
+            from app.services.llm.client import AnthropicLLM
+
+            llm = AnthropicLLM()
+        else:
+            from app.services.llm.client import OpenAICompatLLM
+
+            llm = OpenAICompatLLM()
+        pipeline = TextPipeline(LLMScorer(llm), LLMNarrator(llm), enricher)
+        return pipeline, LLMCompanion(llm)
+    return TextPipeline(HeuristicScorer(), TemplateNarrator(), enricher), HeuristicCompanion()
+
+
+async def main(use_llm: str | None) -> None:
     provider = StaticPlaceProvider.from_json(_FIX / "places_red_square.json")
-    pipeline = TextPipeline(
-        HeuristicScorer(),
-        TemplateNarrator(),
-        MockEnricher.from_json(_FIX / "facts_red_square.json"),
-    )
-    orch = Orchestrator(Discovery(provider), pipeline, HeuristicCompanion(), InMemoryStateStore())
+    pipeline, companion = _build(use_llm)
+    orch = Orchestrator(Discovery(provider), pipeline, companion, InMemoryStateStore())
     sid = "demo"
     barged = False
 
@@ -58,4 +71,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--llm", choices=["anthropic", "openai"], default=None)
+    asyncio.run(main(ap.parse_args().llm))
