@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import base64
 import uuid
 from pathlib import Path
 
@@ -16,9 +17,11 @@ from fastapi.responses import HTMLResponse
 
 from app.services.agent.factory import build_orchestrator
 from app.services.agent.orchestrator import Orchestrator, OrchestratorOutput, merge_patch
+from app.services.stt.stt import STTClient, build_stt
 from app.shared.schemas import (
     GeoPoint,
     Heading,
+    WSAudioInput,
     WSControl,
     WSPositionUpdate,
     WSUserUtterance,
@@ -28,6 +31,7 @@ app = FastAPI(title="AI Audio Guide", version="0.1.0")
 
 _WEB_INDEX = Path(__file__).resolve().parent.parent / "web" / "index.html"
 _orchestrator: Orchestrator | None = None
+_stt: STTClient | None = None
 
 
 def get_orchestrator() -> Orchestrator:
@@ -35,6 +39,13 @@ def get_orchestrator() -> Orchestrator:
     if _orchestrator is None:
         _orchestrator = build_orchestrator()
     return _orchestrator
+
+
+def get_stt() -> STTClient:
+    global _stt
+    if _stt is None:
+        _stt = build_stt()
+    return _stt
 
 
 @app.get("/health")
@@ -80,6 +91,11 @@ async def ws(websocket: WebSocket) -> None:
             elif kind == "utterance":
                 u = WSUserUtterance.model_validate(msg)
                 await _send(websocket, await orch.on_utterance(session_id, u.text))
+            elif kind == "audio":
+                a = WSAudioInput.model_validate(msg)
+                text = await get_stt().transcribe(base64.b64decode(a.data_b64))
+                await websocket.send_json({"type": "transcript", "text": text})
+                await _send(websocket, await orch.on_utterance(session_id, text))
             elif kind == "control":
                 c = WSControl.model_validate(msg)
                 state = await orch.store.load(session_id)

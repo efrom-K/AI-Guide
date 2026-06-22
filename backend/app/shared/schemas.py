@@ -196,6 +196,12 @@ class WSControl(BaseModel):
     patch: ControlPatch
 
 
+class WSAudioInput(BaseModel):
+    type: Literal["audio"] = "audio"
+    data_b64: str  # recorded clip (webm/opus, wav, ...) for STT
+    format: str = "webm"
+
+
 # server -> client
 class WSNarration(BaseModel):
     type: Literal["narration"] = "narration"

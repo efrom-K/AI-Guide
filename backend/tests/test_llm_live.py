@@ -7,7 +7,6 @@ default suite stays offline-green. Run LM Studio to exercise these.
 from __future__ import annotations
 
 import asyncio
-import re
 
 import httpx
 import pytest
@@ -29,8 +28,6 @@ from app.shared.schemas import (
     ScorerInput,
     Significance,
 )
-
-_MARKDOWN = re.compile(r"(^\s*[-*#]\s)|(\]\(https?://)|(```)", re.MULTILINE)
 
 
 def _reachable() -> bool:
@@ -89,12 +86,6 @@ def test_scorer_returns_valid_choice():
     ids = {s.place_id for s in out.scored}
     assert ids == {"shop", "mus"}
     assert out.next in (None, "shop", "mus")
-
-
-def test_narrator_audio_friendly_no_markdown():
-    text = asyncio.run(LLMNarrator(_llm()).narrate(_narr()))
-    assert text
-    assert not _MARKDOWN.search(text), text
 
 
 def test_narrator_silent_when_nothing_new():

@@ -18,6 +18,9 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
 ]
+stt = [
+    "faster-whisper>=1.1",  # local Whisper for voice barge-in (optional)
+]
 
 [build-system]
 requires = ["setuptools>=68"]

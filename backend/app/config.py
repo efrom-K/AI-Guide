@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     geo_source: str = "fixture"  # fixture | overpass
     enrichment_source: str = "mock"  # mock | (websearch later)
 
+    # STT (voice barge-in)
+    stt_backend: str = "mock"  # mock | faster_whisper
+    stt_mock_text: str = "А когда его построили?"
+    whisper_model_size: str = "small"
+    whisper_device: str = "auto"
+    whisper_compute_type: str = "auto"
+
     # Behaviour
     default_language: str = "ru"
     default_radius_m: float = 80.0

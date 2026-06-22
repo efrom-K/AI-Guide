@@ -1,15 +1,21 @@
+import base64
+
 from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.config import settings
 from app.services.agent.factory import build_orchestrator
+from app.services.stt.stt import build_stt
 
 
-def _heuristic_app():
+def _heuristic_app(stt_text: str = "А когда его построили?"):
     # force a deterministic, offline backend regardless of .env
     settings.agent_backend = "heuristic"
     settings.geo_source = "fixture"
+    settings.stt_backend = "mock"
+    settings.stt_mock_text = stt_text
     main_module._orchestrator = build_orchestrator()
+    main_module._stt = build_stt()
     return TestClient(main_module.app)
 
 
@@ -28,6 +34,20 @@ def test_ws_narrates_then_replies():
 
         # barge-in
         ws.send_json({"type": "utterance", "text": "пропускай магазины"})
+        ws.receive_json()  # state
+        reply = ws.receive_json()
+        assert reply["type"] == "reply"
+        assert reply["text"]
+
+
+def test_ws_audio_transcribes_then_replies():
+    client = _heuristic_app(stt_text="пропускай магазины")
+    with client.websocket_connect("/ws") as ws:
+        clip = base64.b64encode(b"fake-audio-bytes").decode()
+        ws.send_json({"type": "audio", "data_b64": clip, "format": "webm"})
+        transcript = ws.receive_json()
+        assert transcript["type"] == "transcript"
+        assert transcript["text"] == "пропускай магазины"
         ws.receive_json()  # state
         reply = ws.receive_json()
         assert reply["type"] == "reply"

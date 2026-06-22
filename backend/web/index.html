@@ -35,6 +35,7 @@
   <div class="row">
     <input id="msg" placeholder="Спросить гида… (например: пропускай магазины)" style="flex:1" />
     <button id="ask" disabled>Спросить</button>
+    <button id="mic" disabled>🎤 Голосом</button>
   </div>
   <div id="log"></div>
 
@@ -53,7 +54,7 @@
       const d = document.createElement('div'); d.className = 'msg ' + cls; d.innerHTML = html;
       log.appendChild(d); window.scrollTo(0, document.body.scrollHeight);
     };
-    const enable = (on) => ['walk','ask'].forEach(id => document.getElementById(id).disabled = !on);
+    const enable = (on) => ['walk','ask','mic'].forEach(id => document.getElementById(id).disabled = !on);
 
     // haversine + interpolation to build a dense point list
     const R = 6371000, rad = d => d*Math.PI/180;
@@ -85,6 +86,7 @@
         if (m.type==='state') setState(m.state);
         else if (m.type==='narration') add('guide', '🗣 ' + m.text);
         else if (m.type==='reply') add('reply', '💬 ' + m.text);
+        else if (m.type==='transcript') add('you', '🎙 ' + m.text);
         else if (m.type==='error') add('meta', '⚠ ' + m.message);
       };
     };
@@ -112,6 +114,30 @@
       document.getElementById('msg').value='';
     };
     document.getElementById('msg').addEventListener('keydown', e => { if (e.key==='Enter') document.getElementById('ask').click(); });
+
+    // voice barge-in: toggle record, send the clip for server-side STT
+    let recorder=null, chunks=[], recording=false;
+    const micBtn = document.getElementById('mic');
+    micBtn.onclick = async () => {
+      if (!recording) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+          recorder = new MediaRecorder(stream);
+          chunks = [];
+          recorder.ondataavailable = e => chunks.push(e.data);
+          recorder.onstop = async () => {
+            stream.getTracks().forEach(t => t.stop());
+            const blob = new Blob(chunks, {type:'audio/webm'});
+            const buf = new Uint8Array(await blob.arrayBuffer());
+            let bin=''; buf.forEach(b => bin += String.fromCharCode(b));
+            ws.send(JSON.stringify({type:'audio', data_b64: btoa(bin), format:'webm'}));
+          };
+          recorder.start(); recording = true; micBtn.textContent = '⏺ Стоп';
+        } catch (err) { add('meta', '⚠ нет доступа к микрофону'); }
+      } else {
+        recorder.stop(); recording = false; micBtn.textContent = '🎤 Голосом';
+      }
+    };
   </script>
 </body>
 </html>

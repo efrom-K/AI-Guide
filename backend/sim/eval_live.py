@@ -106,6 +106,8 @@ async def main(n: int) -> None:
                 lambda _: _text_ok(narrator, _narr(), lambda t: not _CLICHE.search(t)))
     await check("Narrator: без выдуманных инструкций", range(n),
                 lambda _: _text_ok(narrator, _narr(), lambda t: not _INVENT.search(t)))
+    await check("Narrator: не молчит при HIGH+facts", range(n),
+                lambda _: _text_ok(narrator, _narr(), lambda t: bool(t)))
     await check("Narrator: нет лево/право при low-gaze", range(n),
                 lambda _: _text_ok(narrator, _narr(), lambda t: not _LR.search(t)))
     await check("Narrator: [SILENCE] при nothing_new", range(n),
