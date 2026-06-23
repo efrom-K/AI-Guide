@@ -57,6 +57,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final _urlCtrl = TextEditingController(text: 'ws://localhost:8000/ws');
   final _askCtrl = TextEditingController();
+  final _scroll = ScrollController();
   WebSocketChannel? _ch;
   bool _connected = false;
   String _state = '—';
@@ -77,6 +78,14 @@ class _HomePageState extends State<HomePage> {
   final AudioRecorder _rec = AudioRecorder();
   bool _recording = false;
 
+  // UI state.
+  bool _speaking = false; // TTS currently talking
+  String? _lastPos; // "55.7525, 37.6231"
+  String? _lastPlace; // place_id of the current narration
+  bool _wantConnected = false; // user intends a live connection (drives auto-reconnect)
+  Timer? _reconnectTimer;
+  int _retries = 0;
+
   @override
   void initState() {
     super.initState();
@@ -88,6 +97,9 @@ class _HomePageState extends State<HomePage> {
     await _tts.setSpeechRate(0.5); // calmer, guide-like pace
     await _tts.setPitch(1.0);
     await _tts.awaitSpeakCompletion(true);
+    _tts.setStartHandler(() => setState(() => _speaking = true));
+    _tts.setCompletionHandler(() => setState(() => _speaking = false));
+    _tts.setCancelHandler(() => setState(() => _speaking = false));
   }
 
   // Speak text now, cutting off whatever is playing (seamless switch / barge-in).
@@ -97,12 +109,27 @@ class _HomePageState extends State<HomePage> {
     await _tts.speak(text);
   }
 
-  void _add(String kind, String text) => setState(() => _log.add(Msg(kind, text)));
+  void _add(String kind, String text) {
+    setState(() => _log.add(Msg(kind, text)));
+    // Keep the newest message in view.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) {
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
 
   void _connect() {
+    _wantConnected = true;
+    _reconnectTimer?.cancel();
     final ch = WebSocketChannel.connect(Uri.parse(_urlCtrl.text.trim()));
     ch.stream.listen(
       (data) {
+        _retries = 0; // a live message proves the link is healthy
         final m = jsonDecode(data as String) as Map<String, dynamic>;
         switch (m['type']) {
           case 'state':
@@ -110,6 +137,7 @@ class _HomePageState extends State<HomePage> {
             break;
           case 'narration':
             final t = m['text'] as String;
+            setState(() => _lastPlace = m['place_id'] as String?);
             _add('guide', t);
             _say(t);
             break;
@@ -126,13 +154,39 @@ class _HomePageState extends State<HomePage> {
             break;
         }
       },
-      onDone: () => setState(() => _connected = false),
+      onDone: _onDisconnected,
       onError: (e) => _add('meta', '⚠ $e'),
     );
     setState(() {
       _ch = ch;
       _connected = true;
+      _state = '—';
       _add('meta', '· подключение ${_urlCtrl.text}');
+    });
+  }
+
+  // Socket dropped: reflect it, and auto-reconnect if the user still wants to be on.
+  void _onDisconnected() {
+    setState(() => _connected = false);
+    if (!_wantConnected) return;
+    final delay = Duration(seconds: (1 << _retries).clamp(1, 16)); // 1,2,4,8,16s
+    _retries++;
+    _add('meta', '· связь потеряна, переподключение через ${delay.inSeconds}s…');
+    _reconnectTimer = Timer(delay, () {
+      if (_wantConnected) _connect();
+    });
+  }
+
+  void _disconnect() {
+    _wantConnected = false;
+    _reconnectTimer?.cancel();
+    _stopWalk();
+    _tts.stop();
+    _ch?.sink.close();
+    setState(() {
+      _ch = null;
+      _connected = false;
+      _state = '—';
     });
   }
 
@@ -189,16 +243,22 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       final p = _points[_idx++];
-      _send({
-        'type': 'position',
-        'lat': p['lat'],
-        'lon': p['lon'],
-        'direction_deg': p['dir'],
-        'gaze_confidence': 'low',
-        'pace': 'slow',
-      });
+      _sendPosition(p['lat']!, p['lon']!, p['dir']!, 'slow');
     });
     setState(() {});
+  }
+
+  // Send a position and remember it for the status footer.
+  void _sendPosition(double lat, double lon, double dir, String pace) {
+    _send({
+      'type': 'position',
+      'lat': lat,
+      'lon': lon,
+      'direction_deg': dir,
+      'gaze_confidence': 'low',
+      'pace': pace,
+    });
+    setState(() => _lastPos = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}');
   }
 
   // ---- real GPS ----------------------------------------------------------
@@ -230,16 +290,12 @@ class _HomePageState extends State<HomePage> {
       distanceFilter: 5, // metres between updates
     );
     _gpsSub = Geolocator.getPositionStream(locationSettings: settings).listen(
-      (pos) {
-        _send({
-          'type': 'position',
-          'lat': pos.latitude,
-          'lon': pos.longitude,
-          'direction_deg': pos.heading >= 0 ? pos.heading : 0.0,
-          'gaze_confidence': 'low',
-          'pace': pos.speed > 1.5 ? 'fast' : 'slow',
-        });
-      },
+      (pos) => _sendPosition(
+        pos.latitude,
+        pos.longitude,
+        pos.heading >= 0 ? pos.heading : 0.0,
+        pos.speed > 1.5 ? 'fast' : 'slow',
+      ),
       onError: (e) => _add('meta', '⚠ GPS: $e'),
     );
     _add('meta', '· реальный GPS включён');
@@ -307,9 +363,11 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _walkTimer?.cancel();
     _gpsSub?.cancel();
+    _reconnectTimer?.cancel();
     _tts.stop();
     _rec.dispose();
     _ch?.sink.close();
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -320,6 +378,34 @@ class _HomePageState extends State<HomePage> {
         _ => const Color(0xFFFFFBEB),
       };
 
+  // Coloured chip for the agent state (or connection status).
+  Widget _statusChip() {
+    final (label, color, icon) = switch (true) {
+      _ when !_connected && _wantConnected => ('переподключение…', Colors.orange, Icons.sync),
+      _ when !_connected => ('не подключено', Colors.grey, Icons.cloud_off),
+      _ when _speaking => ('говорит', Colors.indigo, Icons.graphic_eq),
+      _ => switch (_state) {
+          'scoring' => ('анализ', Colors.blueGrey, Icons.search),
+          'narrating' => ('рассказ', Colors.indigo, Icons.record_voice_over),
+          'switching' => ('переключение', Colors.indigo, Icons.swap_horiz),
+          'listening' => ('слушает', Colors.teal, Icons.hearing),
+          'answering' => ('отвечает', Colors.teal, Icons.question_answer),
+          'expanding' => ('расширяет радиус', Colors.blueGrey, Icons.zoom_out_map),
+          _ => ('готов', Colors.green, Icons.check_circle),
+        },
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Chip(
+        visualDensity: VisualDensity.compact,
+        backgroundColor: color.withValues(alpha: 0.12),
+        side: BorderSide(color: color.withValues(alpha: 0.4)),
+        avatar: Icon(icon, size: 16, color: color),
+        label: Text(label, style: TextStyle(fontSize: 12, color: color)),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final walking = _walkTimer != null || _gpsSub != null;
@@ -327,7 +413,12 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('🎧 AI Audio Guide'),
         actions: [
-          Center(child: Text('  $_state  ', style: const TextStyle(fontSize: 13))),
+          Center(child: _statusChip()),
+          IconButton(
+            tooltip: _log.isEmpty ? 'Лента пуста' : 'Очистить ленту',
+            icon: const Icon(Icons.delete_sweep_outlined),
+            onPressed: _log.isEmpty ? null : () => setState(_log.clear),
+          ),
           IconButton(
             tooltip: _voice ? 'Озвучка включена' : 'Озвучка выключена',
             icon: Icon(_voice ? Icons.volume_up : Icons.volume_off),
@@ -348,8 +439,8 @@ class _HomePageState extends State<HomePage> {
               ),
               const SizedBox(width: 8),
               FilledButton(
-                onPressed: _connected ? null : _connect,
-                child: Text(_connected ? 'connected' : 'Подключиться'),
+                onPressed: _wantConnected ? _disconnect : _connect,
+                child: Text(_wantConnected ? 'Отключиться' : 'Подключиться'),
               ),
             ]),
             const SizedBox(height: 8),
@@ -381,23 +472,51 @@ class _HomePageState extends State<HomePage> {
                   border: Border.all(color: Colors.black12),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: ListView.builder(
-                  itemCount: _log.length,
-                  itemBuilder: (_, i) {
-                    final m = _log[i];
-                    return Container(
-                      margin: const EdgeInsets.symmetric(vertical: 3),
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: _bg(m.kind),
-                        borderRadius: BorderRadius.circular(10),
+                child: _log.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'Подключитесь и нажмите «Прогулка».\nГид расскажет про места вокруг.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.black38),
+                        ),
+                      )
+                    : ListView.builder(
+                        controller: _scroll,
+                        itemCount: _log.length,
+                        itemBuilder: (_, i) {
+                          final m = _log[i];
+                          return Container(
+                            margin: const EdgeInsets.symmetric(vertical: 3),
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: _bg(m.kind),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(m.text),
+                          );
+                        },
                       ),
-                      child: Text(m.text),
-                    );
-                  },
-                ),
               ),
             ),
+            // Footer: live position + current place id.
+            if (_lastPos != null || _lastPlace != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(children: [
+                  const Icon(Icons.place, size: 14, color: Colors.black45),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      [
+                        if (_lastPos != null) _lastPos,
+                        if (_lastPlace != null) '· $_lastPlace',
+                      ].join(' '),
+                      style: const TextStyle(fontSize: 12, color: Colors.black45),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ]),
+              ),
             const SizedBox(height: 8),
             Row(children: [
               // Push to talk: tap to record, tap again to send.
