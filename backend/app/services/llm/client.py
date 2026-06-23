@@ -46,10 +46,15 @@ class TokenMeter:
         self.calls = 0
         self.tok_in = 0
         self.tok_out = 0
+        self.tok_cached = 0  # prompt tokens served from the provider cache
+        self.provider_cost = 0.0  # USD reported by OpenRouter (accounts for cache)
         self._warned = False
 
     @property
     def cost_usd(self) -> float:
+        # Prefer the provider-reported cost (it already reflects cache discounts).
+        if self.provider_cost > 0:
+            return self.provider_cost
         return (
             self.tok_in / 1e6 * settings.openai_price_in_per_mtok
             + self.tok_out / 1e6 * settings.openai_price_out_per_mtok
@@ -59,15 +64,21 @@ class TokenMeter:
         usage = usage or {}
         ti = int(usage.get("prompt_tokens", 0) or 0)
         to = int(usage.get("completion_tokens", 0) or 0)
+        cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0)
         self.calls += 1
         self.tok_in += ti
         self.tok_out += to
+        self.tok_cached += cached
+        if usage.get("cost") is not None:
+            self.provider_cost += float(usage["cost"])
         budget = settings.usd_session_budget
         cost = self.cost_usd
+        hit = f" cache={cached}" if cached else ""
         tail = f" | ~${cost:.4f}" + (f"/${budget:.0f}" if budget else "")
         _log.info(
-            "%s %s: +%d/+%d tok | total in=%d out=%d (%d calls)%s",
-            role, model, ti, to, self.tok_in, self.tok_out, self.calls, tail,
+            "%s %s: +%d/+%d tok%s | total in=%d out=%d cached=%d (%d calls)%s",
+            role, model, ti, to, hit, self.tok_in, self.tok_out, self.tok_cached,
+            self.calls, tail,
         )
         if budget and cost >= budget and not self._warned:
             self._warned = True
@@ -200,19 +211,50 @@ class OpenAICompatLLM:
             raise RuntimeError("No OpenAI-compatible model configured (set OPENAI_MODEL)")
         return model
 
+    # Roles where reasoning can be safely capped: the Narrator just writes prose
+    # for an already-chosen place (the skip/silence judgment lives in the Scorer
+    # + the deterministic short-circuits), so it needs little thinking. Scorer
+    # (significance/skip judgment), Companion (answers) and Landmark (premium
+    # prose) keep their reasoning effort.
+    _REASONING_CAP_ROLES = frozenset({Role.NARRATOR})
+
+    def _reasoning_for(self, role: Role) -> dict[str, Any] | None:
+        cap = settings.openai_reasoning_max_tokens
+        if cap > 0 and role in self._REASONING_CAP_ROLES:
+            return {"max_tokens": cap}
+        if settings.openai_reasoning_effort:
+            return {"effort": settings.openai_reasoning_effort}
+        return None
+
+    def _system_msg(self, system: str) -> dict[str, Any]:
+        # Mark the static CORE+ROLE prefix for provider prompt caching (OpenRouter
+        # cache_control). Plain string otherwise (LM Studio doesn't grok parts).
+        if settings.openai_prompt_cache:
+            return {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+                ],
+            }
+        return {"role": "system", "content": system}
+
     async def _chat(self, role: Role, system: str, user: str, max_tokens: int, **extra) -> str:
         model = self._model_for(role)
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
-                {"role": "system", "content": system},
+                self._system_msg(system),
                 {"role": "user", "content": user},
             ],
             "max_tokens": max_tokens,
             **extra,
         }
-        if settings.openai_reasoning_effort:
-            payload["reasoning"] = {"effort": settings.openai_reasoning_effort}
+        reasoning = self._reasoning_for(role)
+        if reasoning:
+            payload["reasoning"] = reasoning
+        if settings.openai_prompt_cache:
+            # ask OpenRouter to return cost + cached-token accounting in usage
+            payload["usage"] = {"include": True}
         resp = await self._client.post(self._url, json=payload)
         resp.raise_for_status()
         data = resp.json()

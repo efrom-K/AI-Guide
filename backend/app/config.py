@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     # reasoning (cannot be disabled); "low" minimises the expensive output tokens
     # it spends. "" => don't send the param (e.g. LM Studio, which would reject it).
     openai_reasoning_effort: str = ""  # "" | low | medium | high
+    # Hard cap on reasoning tokens (OpenRouter). Reasoning is billed as expensive
+    # output; even effort=low spends ~380 tok on Gemini 3.x. A small cap suppresses
+    # most of it. >0 overrides effort; verify quality (eval) before lowering.
+    openai_reasoning_max_tokens: int = 0
+    # Prompt caching (OpenRouter): mark the static CORE+ROLE system prefix with
+    # cache_control and request cost/cached-token accounting. Off for LM Studio.
+    openai_prompt_cache: bool = False
 
     # Token/cost monitoring (USD per million tokens; 0 => unknown, cost not logged).
     # gemini-3.5-flash on OpenRouter: 1.5 in / 9.0 out.

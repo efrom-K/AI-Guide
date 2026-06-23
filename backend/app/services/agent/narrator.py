@@ -64,6 +64,12 @@ class LLMNarrator:
         self._llm = llm
 
     async def narrate(self, inp: NarratorInput) -> str:
+        # Deterministic silence — decide in code, don't spend an LLM call (or rely
+        # on the model's reasoning) to stay quiet.
+        if inp.flags.nothing_new:
+            return ""
+        if any(inp.place.name in h for h in inp.history):
+            return ""  # already covered this place — never repeat
         role = role_for_significance(inp.significance)
         system = system_for(role, inp.language)
         user = build_narrator_user(inp)
