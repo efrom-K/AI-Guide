@@ -14,6 +14,8 @@ dependencies:
   flutter_tts: ^4.2.0       # on-device TTS — the guide speaks the narration aloud
   record: ^7.0.0            # mic capture for voice barge-in (7.x: internally consistent federated set)
   path_provider: ^2.1.4     # temp dir for the recorded clip
+  flutter_map: ^8.0.0       # open-source map (Leaflet-like, pure Dart, no API key)
+  latlong2: ^0.9.1          # LatLng type for flutter_map
 
   # Reserved for later stages (compass):
   # flutter_compass: ^0.8.0   # unmaintained — breaks AGP 8 build; heading comes from GPS course instead

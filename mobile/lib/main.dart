@@ -12,8 +12,10 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -77,6 +79,12 @@ class _HomePageState extends State<HomePage> {
   // Microphone — ask the guide by voice (barge-in).
   final AudioRecorder _rec = AudioRecorder();
   bool _recording = false;
+
+  // Map (OpenStreetMap via flutter_map).
+  final MapController _map = MapController();
+  bool _mapReady = false;
+  LatLng _here = const LatLng(55.7525, 37.6231); // Red Square until first fix
+  double _heading = 0; // degrees, for the bearing arrow
 
   // UI state.
   bool _speaking = false; // TTS currently talking
@@ -248,7 +256,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {});
   }
 
-  // Send a position and remember it for the status footer.
+  // Send a position and reflect it on the map + status footer.
   void _sendPosition(double lat, double lon, double dir, String pace) {
     _send({
       'type': 'position',
@@ -258,7 +266,12 @@ class _HomePageState extends State<HomePage> {
       'gaze_confidence': 'low',
       'pace': pace,
     });
-    setState(() => _lastPos = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}');
+    setState(() {
+      _here = LatLng(lat, lon);
+      _heading = dir;
+      _lastPos = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}';
+    });
+    if (_mapReady) _map.move(_here, _map.camera.zoom); // keep the user centred
   }
 
   // ---- real GPS ----------------------------------------------------------
@@ -368,6 +381,7 @@ class _HomePageState extends State<HomePage> {
     _rec.dispose();
     _ch?.sink.close();
     _scroll.dispose();
+    _map.dispose();
     super.dispose();
   }
 
@@ -402,6 +416,44 @@ class _HomePageState extends State<HomePage> {
         side: BorderSide(color: color.withValues(alpha: 0.4)),
         avatar: Icon(icon, size: 16, color: color),
         label: Text(label, style: TextStyle(fontSize: 12, color: color)),
+      ),
+    );
+  }
+
+  // OpenStreetMap panel: user position + bearing arrow, auto-centred.
+  Widget _mapPanel() {
+    return SizedBox(
+      height: 200,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: FlutterMap(
+          mapController: _map,
+          options: MapOptions(
+            initialCenter: _here,
+            initialZoom: 16,
+            onMapReady: () => _mapReady = true,
+          ),
+          children: [
+            TileLayer(
+              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+              userAgentPackageName: 'com.example.ai_audio_guide',
+            ),
+            MarkerLayer(markers: [
+              Marker(
+                point: _here,
+                width: 44,
+                height: 44,
+                child: Transform.rotate(
+                  angle: _heading * pi / 180,
+                  child: const Icon(Icons.navigation, color: Colors.indigo, size: 36),
+                ),
+              ),
+            ]),
+            const RichAttributionWidget(
+              attributions: [TextSourceAttribution('© OpenStreetMap')],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -464,6 +516,8 @@ class _HomePageState extends State<HomePage> {
                     : (v) => setState(() => _useRealGps = v),
               ),
             ]),
+            const SizedBox(height: 8),
+            _mapPanel(),
             const SizedBox(height: 8),
             Expanded(
               child: Container(
