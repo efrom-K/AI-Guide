@@ -8,11 +8,14 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 void main() => runApp(const GuideApp());
@@ -69,6 +72,10 @@ class _HomePageState extends State<HomePage> {
   // On-device TTS — the guide speaks the narration aloud.
   final FlutterTts _tts = FlutterTts();
   bool _voice = true; // speaker on/off
+
+  // Microphone — ask the guide by voice (barge-in).
+  final AudioRecorder _rec = AudioRecorder();
+  bool _recording = false;
 
   @override
   void initState() {
@@ -261,11 +268,47 @@ class _HomePageState extends State<HomePage> {
     if (!_voice) _tts.stop();
   }
 
+  // ---- voice barge-in (mic) ---------------------------------------------
+  Future<void> _toggleMic() async {
+    if (_recording) {
+      await _stopRecAndSend();
+    } else {
+      await _startRec();
+    }
+  }
+
+  Future<void> _startRec() async {
+    if (_ch == null) return;
+    if (!await _rec.hasPermission()) {
+      _add('meta', '⚠ Нет доступа к микрофону');
+      return;
+    }
+    _tts.stop(); // barge-in: hush the guide while the user speaks
+    final dir = await getTemporaryDirectory();
+    final path = '${dir.path}/ask.wav';
+    await _rec.start(
+      const RecordConfig(encoder: AudioEncoder.wav, sampleRate: 16000, numChannels: 1),
+      path: path,
+    );
+    setState(() => _recording = true);
+  }
+
+  Future<void> _stopRecAndSend() async {
+    final path = await _rec.stop();
+    setState(() => _recording = false);
+    if (path == null) return;
+    final bytes = await File(path).readAsBytes();
+    if (bytes.isEmpty) return;
+    _send({'type': 'audio', 'data_b64': base64Encode(bytes), 'format': 'wav'});
+    _add('meta', '· отправлено голосом (${bytes.length} Б)');
+  }
+
   @override
   void dispose() {
     _walkTimer?.cancel();
     _gpsSub?.cancel();
     _tts.stop();
+    _rec.dispose();
     _ch?.sink.close();
     super.dispose();
   }
@@ -357,6 +400,18 @@ class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 8),
             Row(children: [
+              // Push to talk: tap to record, tap again to send.
+              IconButton.filledTonal(
+                tooltip: _recording ? 'Остановить и отправить' : 'Спросить голосом',
+                isSelected: _recording,
+                style: _recording
+                    ? IconButton.styleFrom(backgroundColor: Colors.red.shade100)
+                    : null,
+                icon: Icon(_recording ? Icons.stop : Icons.mic,
+                    color: _recording ? Colors.red : null),
+                onPressed: _connected ? _toggleMic : null,
+              ),
+              const SizedBox(width: 8),
               Expanded(
                 child: TextField(
                   controller: _askCtrl,

@@ -12,10 +12,11 @@ dependencies:
   web_socket_channel: ^3.0.1
   geolocator: ^13.0.1
   flutter_tts: ^4.2.0       # on-device TTS — the guide speaks the narration aloud
+  record: ^7.0.0            # mic capture for voice barge-in (7.x: internally consistent federated set)
+  path_provider: ^2.1.4     # temp dir for the recorded clip
 
-  # Reserved for later stages (compass, mic):
+  # Reserved for later stages (compass):
   # flutter_compass: ^0.8.0   # unmaintained — breaks AGP 8 build; heading comes from GPS course instead
-  # record: ^5.1.2            # mic capture for voice barge-in (next stage)
 
 dev_dependencies:
   flutter_test:
