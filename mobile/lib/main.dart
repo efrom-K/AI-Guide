@@ -41,6 +41,14 @@ class Msg {
   Msg(this.kind, this.text);
 }
 
+// A narrated place to pin on the map.
+class PlaceMark {
+  final String id;
+  final LatLng point;
+  final String name;
+  PlaceMark(this.id, this.point, this.name);
+}
+
 // Red Square waypoints (lat, lon) — same route as the backend sim.
 const List<List<double>> kRoute = [
   [55.7525, 37.6231],
@@ -83,8 +91,11 @@ class _HomePageState extends State<HomePage> {
   // Map (OpenStreetMap via flutter_map).
   final MapController _map = MapController();
   bool _mapReady = false;
+  bool _follow = true; // auto-centre on the user vs free pan
   LatLng _here = const LatLng(55.7525, 37.6231); // Red Square until first fix
   double _heading = 0; // degrees, for the bearing arrow
+  final List<PlaceMark> _places = []; // narrated places pinned on the map
+  String? _currentPlaceId; // the place being narrated now (highlighted)
 
   // UI state.
   bool _speaking = false; // TTS currently talking
@@ -131,6 +142,20 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  // Pin a narrated place on the map (dedup by id; the latest is "current").
+  void _addPlace(Map<String, dynamic> m) {
+    final id = m['place_id'] as String?;
+    final lat = (m['lat'] as num?)?.toDouble();
+    final lon = (m['lon'] as num?)?.toDouble();
+    if (id == null || lat == null || lon == null) return;
+    setState(() {
+      _currentPlaceId = id;
+      if (!_places.any((p) => p.id == id)) {
+        _places.add(PlaceMark(id, LatLng(lat, lon), (m['place_name'] as String?) ?? ''));
+      }
+    });
+  }
+
   void _connect() {
     _wantConnected = true;
     _reconnectTimer?.cancel();
@@ -146,6 +171,7 @@ class _HomePageState extends State<HomePage> {
           case 'narration':
             final t = m['text'] as String;
             setState(() => _lastPlace = m['place_id'] as String?);
+            _addPlace(m); // pin it on the map
             _add('guide', t);
             _say(t);
             break;
@@ -271,7 +297,7 @@ class _HomePageState extends State<HomePage> {
       _heading = dir;
       _lastPos = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}';
     });
-    if (_mapReady) _map.move(_here, _map.camera.zoom); // keep the user centred
+    if (_mapReady && _follow) _map.move(_here, _map.camera.zoom); // keep user centred
   }
 
   // ---- real GPS ----------------------------------------------------------
@@ -420,40 +446,75 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // OpenStreetMap panel: user position + bearing arrow, auto-centred.
+  // OpenStreetMap panel: place pins + user position/bearing, follow toggle.
   Widget _mapPanel() {
     return SizedBox(
-      height: 200,
+      height: 220,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
-        child: FlutterMap(
-          mapController: _map,
-          options: MapOptions(
-            initialCenter: _here,
-            initialZoom: 16,
-            onMapReady: () => _mapReady = true,
-          ),
-          children: [
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.example.ai_audio_guide',
+        child: Stack(children: [
+          FlutterMap(
+            mapController: _map,
+            options: MapOptions(
+              initialCenter: _here,
+              initialZoom: 16,
+              onMapReady: () => _mapReady = true,
+              // User dragged/zoomed the map -> switch to free-browse.
+              onPositionChanged: (camera, hasGesture) {
+                if (hasGesture && _follow) setState(() => _follow = false);
+              },
             ),
-            MarkerLayer(markers: [
-              Marker(
-                point: _here,
-                width: 44,
-                height: 44,
-                child: Transform.rotate(
-                  angle: _heading * pi / 180,
-                  child: const Icon(Icons.navigation, color: Colors.indigo, size: 36),
-                ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.ai_audio_guide',
               ),
-            ]),
-            const RichAttributionWidget(
-              attributions: [TextSourceAttribution('© OpenStreetMap')],
+              MarkerLayer(markers: [
+                // narrated places (current one highlighted)
+                for (final p in _places)
+                  Marker(
+                    point: p.point,
+                    width: 30,
+                    height: 30,
+                    child: Icon(
+                      Icons.location_on,
+                      size: p.id == _currentPlaceId ? 30 : 24,
+                      color: p.id == _currentPlaceId ? Colors.redAccent : Colors.blueGrey,
+                    ),
+                  ),
+                // the user, on top
+                Marker(
+                  point: _here,
+                  width: 44,
+                  height: 44,
+                  child: Transform.rotate(
+                    angle: _heading * pi / 180,
+                    child: const Icon(Icons.navigation, color: Colors.indigo, size: 36),
+                  ),
+                ),
+              ]),
+              const RichAttributionWidget(
+                attributions: [TextSourceAttribution('© OpenStreetMap')],
+              ),
+            ],
+          ),
+          // follow / free-browse toggle
+          Positioned(
+            right: 8,
+            bottom: 8,
+            child: FloatingActionButton.small(
+              heroTag: 'follow',
+              tooltip: _follow ? 'Следую за вами' : 'Свободный просмотр — нажмите, чтобы следовать',
+              backgroundColor: _follow ? Colors.indigo : Colors.white,
+              foregroundColor: _follow ? Colors.white : Colors.black54,
+              onPressed: () {
+                setState(() => _follow = true);
+                if (_mapReady) _map.move(_here, _map.camera.zoom);
+              },
+              child: Icon(_follow ? Icons.my_location : Icons.location_searching),
             ),
-          ],
-        ),
+          ),
+        ]),
       ),
     );
   }

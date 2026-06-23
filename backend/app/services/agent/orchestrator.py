@@ -56,6 +56,9 @@ class OrchestratorOutput:
     text: str = ""
     place_id: str | None = None
     significance: str | None = None
+    place_name: str | None = None
+    lat: float | None = None
+    lon: float | None = None
 
 
 def fingerprint(candidates: list[Candidate]) -> str:
@@ -139,7 +142,7 @@ class Orchestrator:
             st.last_place_id = out.place.id
             state = State.SWITCHING if switching else State.NARRATING
             return await self._finish(
-                st, state, "narration", out.text, out.place.id, out.significance
+                st, state, "narration", out.text, out.place, out.significance
             )
 
         state = State.EXPANDING if result.expanded else State.IDLE
@@ -178,10 +181,19 @@ class Orchestrator:
         state: State,
         kind: str,
         text: str = "",
-        place_id: str | None = None,
+        place=None,
         significance=None,
     ) -> OrchestratorOutput:
         st.state = state
         await self.store.save(st)
         sig = significance.value if significance is not None else None
-        return OrchestratorOutput(state.value, kind, text, place_id, sig)
+        return OrchestratorOutput(
+            state.value,
+            kind,
+            text,
+            place.id if place else None,
+            sig,
+            place.name if place else None,
+            place.location.lat if place else None,
+            place.location.lon if place else None,
+        )

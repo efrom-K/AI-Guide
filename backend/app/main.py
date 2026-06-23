@@ -64,7 +64,15 @@ async def _send(ws: WebSocket, out: OrchestratorOutput) -> None:
     await ws.send_json({"type": "state", "state": out.state})
     if out.kind == "narration" and out.text:
         await ws.send_json(
-            {"type": "narration", "text": out.text, "place_id": out.place_id, "final": True}
+            {
+                "type": "narration",
+                "text": out.text,
+                "place_id": out.place_id,
+                "place_name": out.place_name,
+                "lat": out.lat,
+                "lon": out.lon,
+                "final": True,
+            }
         )
     elif out.kind == "reply" and out.text:
         await ws.send_json({"type": "reply", "text": out.text})
