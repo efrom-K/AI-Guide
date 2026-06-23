@@ -1,227 +1,166 @@
 # CONTINUE.md — состояние проекта «AI Audio Guide» (для продолжения работы)
 
-> Хэндофф-документ для следующей сессии. Здесь максимум контекста: что есть, как
-> запускать, что осталось, и где именно мы остановились. Дизайн-спека — в
-> `ARCHITECTURE.md`, план — в файле плана сессии. Канонические промпты — в
-> `backend/prompts/*.txt`.
+> Хэндофф-документ для следующей сессии: что есть, как запускать, что осталось, где
+> остановились. Дизайн-спека — `ARCHITECTURE.md`; выбор и удешевление модели —
+> `MODEL_COMPARISON.md`; канонические промпты — `backend/prompts/*.txt`.
 
-Дата паузы: 2026-06-23. Рабочая папка: `D:\VS_Code\AI Guide`. Платформа: Windows 11,
-PowerShell + Git Bash. Git: репозиторий инициализирован, по коммиту на этап.
-
----
-
-## 1. Что это и как устроено (коротко)
-
-Автономный аудиогид реального времени: GPS+направление → находим места → оцениваем
-значимость → обогащаем фактами → озвучиваем живой рассказ; можно прервать голосом и
-порулить экскурсией. **Один оркестратор-«мозг»** + 3 stateless LLM-роли
-(**Scorer**→JSON, **Narrator**→текст, **Companion**→чат), общающиеся только через общее
-состояние сессии. Вокруг — службы Geo (OSM/фикстуры), Enrichment (факты+кэш), TTS, STT,
-State (in-memory/Redis). Клиент-сервер по WebSocket; клиент — Flutter.
+Обновлено: 2026-06-23. Папка: `D:\VS_Code\AI Guide`. Windows 11, PowerShell + Git Bash.
+Git: по коммиту на фичу (см. `git log`).
 
 ---
 
-## 2. Текущее состояние: что РАБОТАЕТ
+## 1. Что это и как устроено
 
-Серверное ядро готово и проверено **end-to-end на живой локальной модели** (qwen via LM
-Studio). 37 автотестов зелёные, ruff чист.
+Автономный аудиогид реального времени: GPS+направление → находим места (OSM) → оцениваем
+значимость → обогащаем фактами → **озвучиваем живой рассказ**; можно **прервать голосом** и
+порулить экскурсией. Один оркестратор-«мозг» + 3 stateless LLM-роли (**Scorer**→JSON,
+**Narrator**→текст, **Companion**→чат) через общее состояние сессии. Службы: Geo
+(OSM/фикстуры), Enrichment (факты+кэш), STT, TTS-интерфейс, State (in-memory/Redis).
+Клиент-сервер по WebSocket; клиент — Flutter (Android + web/десктоп).
 
-| Этап | Статус | Суть |
+---
+
+## 2. Что РАБОТАЕТ (проверено end-to-end)
+
+Бэкенд на **облачном Gemini 3.5 Flash** (OpenRouter) ИЛИ локальном **qwen** (LM Studio) —
+переключается одним блоком в `.env`. Flutter-приложение **собирается в APK и работает на
+Android-эмуляторе** `guide_emu`.
+
+| Область | Статус | Суть |
 |---|---|---|
-| 0 Каркас | ✅ | FastAPI, схемы, конфиг, тесты |
-| 1 Geo + sim | ✅ | Overpass+фикстуры, ранжирование (дистанция/тип/конус), адаптивный радиус, дедуп, виртуальная прогулка |
-| 2 Промпты + пайплайн | ✅ | CORE+роли; Scorer(JSON)/Narrator/Companion; провайдер-агностичный LLMClient |
-| 3 Оркестратор | ✅ | FSM, память сессии, эвристический гейт, control_patch, mute, OFFLINE/ERROR/RECOVERY |
-| 4 WebSocket + TTS-интерфейс | ✅ | `/ws`, веб-демо, eval-харнесс. Реальный TTS НЕ подключён (NullTTS) |
-| 5 STT (голосовой barge-in) | ✅ | STTClient + MockSTT + FasterWhisperSTT (локально), микрофон в вебе |
-| 6a Flutter web/десктоп | ✅ | Клиент компилируется (`flutter build web` OK), analyze чист, виджет-тест |
-| 6b Android | 🔶 в процессе | Тулчейн `[√]`, лицензии приняты, cmdline-tools есть. **Нет эмулятора/системного образа. APK ещё не собирал.** |
+| Бэкенд-ядро | ✅ | FastAPI + asyncio + WS; FSM, память сессии, эвристический гейт, control_patch, OFFLINE/ERROR/RECOVERY |
+| Geo + sim | ✅ | Overpass+фикстуры, ранжирование (дистанция/тип/конус взгляда), адаптивный радиус, дедуп; виртуальная прогулка |
+| Промпты + пайплайн | ✅ | CORE+роли; Scorer(строгий JSON)/Narrator/Companion; провайдер-агностичный `LLMClient` |
+| **LLM: Gemini 3.5 Flash** | ✅ | OpenRouter на все роли; локальный qwen — фолбэк. Метр токенов/стоимости |
+| **Удешевление** | ✅ | Кап reasoning у Narrator + детерминированное молчание/анти-повтор; −58% стоимости, качество 100% (см. `MODEL_COMPARISON.md`) |
+| **STT (голосовой barge-in)** | ✅ | Реальный `faster-whisper` (CPU/int8); распознаёт RU. `MockSTT` для тестов |
+| TTS | ✅ (на клиенте) | Гид **говорит** через on-device `flutter_tts` (RU). Серверный TTS = NullTTS (Piper не делали) |
+| **Flutter-приложение** | ✅ | Android APK на эмуляторе; web/десктоп тоже собираются |
+| — озвучка | ✅ | `flutter_tts`, тумблер 🔊, barge-in глушит речь |
+| — голосовой вопрос | ✅ | `record` → WAV → STT → ответ Companion (озвучивается) |
+| — карта | ✅ | OpenStreetMap (`flutter_map`): позиция+направление, **пины мест**, тумблер **follow/свободный просмотр** |
+| — UX | ✅ | Статус-чип состояния, авто-reconnect, футер позиция/место, пустое состояние, очистка, авто-скролл, симуляция/реальный GPS |
 
-**Демо, которые реально работают сейчас:**
-- `python -m sim.run_orchestrator --llm openai` — полный агент на qwen (рассказ, переключения, гейт, barge-in).
-- Браузер `http://localhost:8000` — прогулка + вопросы + кнопка голос.
-- `python -m sim.eval_live --n 8` — метрики качества в процентах.
+**Демо сейчас:**
+- `python -m sim.run_orchestrator --llm openai` — полный агент на Gemini (или qwen).
+- `python -m sim.eval_live --n 5` — метрики качества (% hold-rate) + лог токенов/стоимости.
+- Браузер `http://localhost:8000` — веб-демо прогулки.
+- Эмулятор `guide_emu` + APK — мобильный клиент (карта, озвучка, микрофон).
+- Smoke: `sim.smoke_openrouter` (LLM), `sim.smoke_stt <wav>` (STT), `sim.smoke_cache` (кэш).
 
 ---
 
 ## 3. Что ОСТАЛОСЬ
 
-**Главные продуктовые дыры:**
-- **TTS не подключён** — аудиогид пока НЕ говорит (везде только текст). План: локальный
-  **Piper** (поставить как whisper, бесплатно). Это самая ценная недостающая часть.
-- **Мультиязычность** (Этап 7): EN плавает 0–75%, т.к. `{language}` суётся в русский CORE.
-  Нужны **per-language CORE-шаблоны**.
-
-**Этап 6b (мобильный):** собрать APK; создать эмулятор (нужен системный образ) или
-подключить телефон; добавить реальные сенсоры (GPS/компас/микрофон) вместо симуляции.
-
-**Этап 7:** мультиязычность, бюджет латентности (assert в sim), полировка, README.
-
-**Ревью-задачи (#9–#13):**
-- #9 удешевление hot-path — гейт сделан; осталось **prompt caching** (нужно при облаке).
-- #10 eval-харнесс — базовый есть (`sim/eval_live.py`); добавить **LLM-as-judge + golden-корпус**.
-- #11 FSM — состояния/переходы есть; **отмена in-flight стрима Narrator** при barge-in (когда будет стриминговый TTS).
-- #12 продакшн-реалии — offline-режим (клиентское редуцированное ядро), privacy/consent/TTL, AEC для голоса, OSM ODbL-атрибуция, battery, pedestrian safety.
-- #13 verification id/цен (DeepSeek/GLM/Gemini) + мультипровайдерный роутер (сейчас только интерфейс + OpenAI-совместимый клиент).
-
-**Состояние тасков (Task tool):** 1–5 completed, 6 in_progress, 7 pending, 9–13 pending.
+- **Тест на реальном телефоне** — реальный GPS, русский голос TTS и микрофон полноценно
+  проверяются на устройстве (у эмулятора GPS фейковый, нет русского голоса).
+- **Мультиязычность (этап 7)** — per-language CORE-промпт + выбор языка TTS/STT.
+- **Серверный TTS (Piper)** — опционально; сейчас озвучивает клиент (этого достаточно).
+- **Продакшн-карта** — публичные OSM-тайлы не для нагрузки; свой тайл-сервер/провайдер.
+- **Реальный Overpass + кэш фактов (WebSearch enrichment)** — сейчас фикстуры/mock.
+- **Безопасность/бюджет:** перевыпустить ключ OpenRouter (светился в чате) и поставить
+  жёсткий лимит $25/мес в дашборде OpenRouter (в коде только мягкое предупреждение).
+- **GPU STT** — доустановить `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`, тогда `WHISPER_DEVICE=cuda`.
 
 ---
 
-## 4. Структура репозитория
+## 4. Как запускать
 
-```
-ARCHITECTURE.md        дизайн-спека (архитектура, полный промпт, выбор моделей, пример)
-CLAUDE.md              гайд для будущих сессий
-CONTINUE.md            этот файл
-BUSINESS_LOGICS.pdf    исходная бизнес-логика (RU)
-backend/
-  .venv/               Python 3.14 venv
-  .env                 локальные секреты (gitignored): LM Studio creds
-  pyproject.toml       deps; extras: [dev], [stt]
-  app/
-    config.py          Settings (pydantic-settings, читает .env + env vars)
-    main.py            FastAPI: /health, /, /ws (position/utterance/audio/control)
-    shared/
-      schemas.py       ВСЕ схемы (домен, роли I/O, control_patch, SessionState, WS-сообщения)
-      geo_math.py      haversine/bearing/angle_diff
-    services/
-      geo/             categories, providers (Overpass+Static), ranking, discovery
-      enrichment/      enricher (EnrichmentCache, MockEnricher, prefetch/attach_facts)
-      agent/           prompts, significance, scorer, narrator, companion,
-                       pipeline, orchestrator (FSM), factory (build_orchestrator)
-      llm/             router (Role→model), client (LLMClient: AnthropicLLM,
-                       FakeLLM, OpenAICompatLLM)
-      state/           store (StateStore: InMemory, Redis, default_store)
-      tts/             tts (TTSClient, NullTTS)  ← реального TTS пока нет
-      stt/             stt (STTClient, MockSTT, FasterWhisperSTT, build_stt)
-  prompts/             core.txt, narrator.txt, scorer.txt, companion.txt  ← КАНОН
-  sim/                 walk, routes, run_geo, run_agent, run_orchestrator, eval_live
-  tests/               37 проходят; test_llm_live (skip без LM Studio); test_stt_live (opt-in)
-  web/index.html       браузерное демо (прогулка + чат + микрофон)
-mobile/                Flutter-клиент (web/windows готовы; android-скаффолд есть)
-  lib/main.dart        тонкий WS-клиент: симуляция прогулки + рассказ/ответ + вопрос
-  pubspec.yaml         web_socket_channel; плагины сенсоров закомментированы
-```
-
----
-
-## 5. Окружение (важные факты)
-
-- **Python 3.14.5**, venv: `backend\.venv`. Запуск: `.\.venv\Scripts\python.exe`.
-- **LM Studio** на `http://localhost:1234/v1` (OpenAI-совместимый). Загружена модель
-  **`qwen/qwen3.5-9b`** (ещё доступны `google/gemma-4-12b-qat`, `google/gemma-4-e4b`).
-- **`backend/.env`** (gitignored): `OPENAI_BASE_URL=http://localhost:1234/v1`,
-  `OPENAI_API_KEY=lm-studio`, `OPENAI_MODEL=qwen/qwen3.5-9b`. `AGENT_BACKEND` задаём через
-  env-переменную при запуске (по умолчанию `heuristic`).
-- **faster-whisper** установлен в venv (ставится `pip install -e ".[stt]"`).
-- **Flutter 3.44.2** в `C:\FlutterSDK\flutter\bin` (PATH прописан в user-env; в свежих
-  shell-ах на всякий случай префиксь `$env:Path = "C:\FlutterSDK\flutter\bin;" + $env:Path`).
-  Dart 3.12.2.
-- **Android SDK 36.1.0** в `C:\Users\efimr\AppData\Local\Android\Sdk`; **лицензии приняты**,
-  cmdline-tools установлены (`...\cmdline-tools\latest\bin\sdkmanager.bat`). **Системного
-  образа и AVD нет.**
-
----
-
-## 6. Команды (шпаргалка)
-
+**Бэкенд** (из `D:\VS_Code\AI Guide\backend`):
 ```powershell
-# всегда для кириллицы в консоли:
 $env:PYTHONIOENCODING="utf-8"
-cd "D:\VS_Code\AI Guide\backend"
-
-# тесты + линт
-.\.venv\Scripts\python.exe -m ruff check .
-.\.venv\Scripts\python.exe -m pytest -q          # 37 pass (+live если LM Studio поднят)
-
-# демо агента (офлайн, шаблон)            / на живой модели:
-.\.venv\Scripts\python.exe -m sim.run_orchestrator
-.\.venv\Scripts\python.exe -m sim.run_orchestrator --llm openai
-
-# метрики качества на модели
-.\.venv\Scripts\python.exe -m sim.eval_live --n 8
-
-# сервер с живой моделью -> http://localhost:8000
-$env:AGENT_BACKEND="openai"; .\.venv\Scripts\python.exe -m uvicorn app.main:app
-
-# Flutter (web)
-$env:Path = "C:\FlutterSDK\flutter\bin;" + $env:Path
-cd "D:\VS_Code\AI Guide\mobile"; flutter run -d chrome
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+`--host 0.0.0.0` нужен, чтобы достучаться с эмулятора/телефона. Health: `http://localhost:8000/health`.
+
+**Flutter (эмулятор):**
+```powershell
+$env:Path = "C:\FlutterSDK\flutter\bin;" + $env:Path
+$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"   # для sdkmanager/avdmanager/emulator
+flutter emulators --launch guide_emu
+cd "D:\VS_Code\AI Guide\mobile"; flutter build apk --debug
+# установка/запуск:
+$env:Path = "C:\Users\efimr\AppData\Local\Android\Sdk\platform-tools;" + $env:Path
+adb -s emulator-5554 install -r build\app\outputs\flutter-apk\app-debug.apk
+adb -s emulator-5554 reverse tcp:8000 tcp:8000          # эмулятор: localhost:8000 -> хост
+adb -s emulator-5554 shell pm grant com.example.ai_audio_guide android.permission.RECORD_AUDIO
+adb -s emulator-5554 shell monkey -p com.example.ai_audio_guide -c android.intent.category.LAUNCHER 1
+```
+В приложении: дефолтный URL `ws://localhost:8000/ws` работает как есть (через `adb reverse`).
+На реальном телефоне — вписать `ws://<LAN-IP-ПК>:8000/ws`.
 
 ---
 
-## 7. Ключевые решения
+## 5. Окружение (факты)
 
-- **Один оркестратор + 3 stateless роли**, не мульти-агент. Роли общаются через
-  `SessionState`. «Разделение моделей по сервисам» = деплой, не несколько агентов.
-- **Провайдер-агностичный `LLMClient`**: `AnthropicLLM`, `OpenAICompatLLM` (LM Studio/
-  OpenRouter/любой /chat/completions), `FakeLLM` (тесты). Решение: «интерфейс сейчас,
-  реальные провайдеры позже».
-- **Удешевлённый стек (предложение, НЕ зафиксирован, ids/цены не подтверждены — #13):**
-  Scorer/Narrator/Enrichment → DeepSeek/GLM; Companion → Gemini 3.5 Flash; Narrator
-  «дёшево везде» с обязательным A/B на RU. Сейчас всё крутится на локальной qwen.
-- **Эвристический гейт** перед LLM-Scorer (×7–100 экономии вызовов).
-- **`control_patch`** — закрытая pydantic-схема (skip_categories/focus_topics/verbosity/mute).
-
----
-
-## 8. Известные проблемы / находки (ВАЖНО)
-
-- **LM Studio требует `response_format` = `json_schema`** (а не `json_object`) — уже
-  починено в `OpenAICompatLLM.complete_json`.
-- **9B qwen изредка выдумывает факты сверх FACTS** (наблюдали «Софийский собор Красного
-  Села» вместо Василия Блаженного). Контракт держит 100%, тонкое «только факты» — нет.
-  → нужен A/B с облачной моделью (DeepSeek/Gemini обычно строже).
-- **Мультиязычность плавает** (EN 0–75%) — `{language}` в русском CORE не переносится.
-  → Этап 7: per-language CORE.
-- **Single-run live-проверки нарратора флейки** (temperature>0) → качество меряем как
-  rate в `sim/eval_live.py`, в pytest только надёжные контрактные проверки.
-- **Реального TTS нет** (NullTTS) — гид не говорит. План: локальный Piper.
-- Последний eval на qwen (n=8): JSON/markdown/клише/выдуманные-инструкции/лево-право/
-  тишина/companion — ~100%; EN — переменно.
-
-## 9. Гочи окружения
-
-- Консоль Windows cp1251 → ставь `$env:PYTHONIOENCODING="utf-8"`; sim-скрипты сами
-  reconfigure stdout. `Select-Object -First N` на пайпе sim → exit 255 (безвредно).
-- **НЕ передавай кириллицу в `python -` через PowerShell heredoc** — будет мояибаке
-  (так испортился вопрос в одном WS-демо). Реальные клиенты шлют чистый UTF-8 по WS.
-- Flutter в свежих shell-ах префиксь PATH (см. выше).
-- Android-лицензии принимались через redirect stdin из файла:
-  `cmd /c "C:\FlutterSDK\flutter\bin\flutter.bat doctor --android-licenses < <файл с 'y'>"`
-  (пайп «y» построчно НЕ срабатывает). Уже приняты.
-- git ругается LF→CRLF — безвредно.
+- **Python 3.14**, venv в `backend\.venv`. Зависимости поставлены (FastAPI, httpx, pydantic,
+  faster-whisper, ctranslate2, websockets).
+- **Flutter 3.44.2** в `C:\FlutterSDK\flutter\bin` (Dart 3.12.2). PATH прописан, но в свежих
+  shell-ах префиксь на всякий случай.
+- **Android SDK** в `C:\Users\efimr\AppData\Local\Android\Sdk`; лицензии приняты; системный
+  образ `system-images;android-35;google_apis;x86_64`; AVD **`guide_emu`** (Pixel 6).
+- **JBR JDK 21** в `C:\Program Files\Android\Android Studio\jbr` — задавать как `JAVA_HOME`
+  для `sdkmanager`/`avdmanager`/эмулятора (иначе «Java 17+ required»).
+- **LM Studio** (если используем qwen): `http://localhost:1234/v1`, модель `qwen/qwen3.5-9b`,
+  RTX 3060 12GB.
+- **OpenRouter**: ключ в `backend/.env` (gitignored). Модель `google/gemini-3.5-flash`.
 
 ---
 
-## 10. ГДЕ ОСТАНОВИЛИСЬ → следующий шаг
+## 6. Конфиг `.env` (gitignored, `backend/.env`)
 
-Остановились на **Этапе 6b**: только что приняли Android-лицензии (`[√] Android toolchain`),
-эмулятора/системного образа нет. Собирались запустить `flutter build apk --debug` —
-пользователь поставил паузу.
+Облачный Gemini (текущий) — ключевые строки:
+```
+AGENT_BACKEND=openai
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+OPENAI_API_KEY=sk-or-...                 # вне git; перевыпустить
+OPENAI_MODEL=google/gemini-3.5-flash
+OPENAI_REASONING_EFFORT=low
+OPENAI_REASONING_MAX_TOKENS=64           # кап reasoning ТОЛЬКО для Narrator
+OPENAI_PROMPT_CACHE=true                 # + точный учёт стоимости (usage.include)
+OPENAI_PRICE_IN_PER_MTOK=1.5
+OPENAI_PRICE_OUT_PER_MTOK=9.0
+USD_SESSION_BUDGET=25                    # мягкое предупреждение, не жёсткий кап
+STT_BACKEND=faster_whisper
+WHISPER_MODEL_SIZE=small
+WHISPER_DEVICE=cpu                       # cuda нужен cublas/cudnn на PATH
+WHISPER_COMPUTE_TYPE=int8
+DEFAULT_LANGUAGE=ru
+```
+Откат на локальный qwen: заменить `OPENAI_BASE_URL/KEY/MODEL` на LM Studio (закомментированы
+в `.env`), `OPENAI_REASONING_*`/`OPENAI_PROMPT_CACHE` можно убрать (LM Studio их не понимает).
 
-**Чтобы продолжить 6b:**
-1. **Собрать APK** (доказательство компиляции под Android; первый Gradle-билд долгий):
-   ```powershell
-   $env:Path = "C:\FlutterSDK\flutter\bin;" + $env:Path
-   cd "D:\VS_Code\AI Guide\mobile"; flutter build apk --debug
-   ```
-2. **Эмулятор** (нужен системный образ, ~1ГБ):
-   ```powershell
-   & "C:\Users\efimr\AppData\Local\Android\Sdk\cmdline-tools\latest\bin\sdkmanager.bat" "system-images;android-35;google_apis;x86_64"
-   flutter emulators --create --name guide_emu
-   flutter emulators --launch guide_emu
-   ```
-   (проще — создать AVD через Android Studio → Device Manager GUI; или подключить телефон с USB-debug.)
-3. **WS URL на устройстве:** эмулятор → `ws://10.0.2.2:8000/ws`; реальный телефон → LAN-IP
-   ПК. В приложении поле URL редактируемое; дефолт `ws://localhost:8000/ws` (для web/десктопа).
-4. **Реальные сенсоры (6b+):** раскомментировать в `mobile/pubspec.yaml` плагины
-   (geolocator, flutter_compass, just_audio, record), заменить симуляцию прогулки на
-   GPS+компас, добавить детекцию «телефон в кармане» → `gaze_confidence`, проигрывание
-   аудио и захват микрофона.
+---
 
-**Рекомендуемый приоритет после паузы:** (а) **локальный TTS (Piper)** — чтобы гид
-заговорил во всех клиентах; (б) **мультиязычность** (per-language CORE); (в) дотянуть 6b
-на телефоне; (г) при доступе к облаку — verification моделей + A/B качества (#13).
+## 7. Гочи (на чём уже спотыкались)
+
+- **Сборка Kotlin падает «different roots»** — pub-кэш на `C:`, проект на `D:`. Лечение уже
+  в `mobile/android/gradle.properties`: `kotlin.incremental=false`.
+- **`flutter_compass` выкинули** — не обновлялся, ломал AGP 8 (нет `namespace`). Heading
+  берём из курса GPS (`position.heading`), `gaze_confidence=low` — это и есть фолбэк
+  «компас в кармане» из дизайна.
+- **`record` запинён на `^7.0.0`** — 5.x разрешался в несовместимый федеративный набор
+  (record_linux без `startStream`).
+- **Gemini 3.x: ризонинг отключить нельзя** («Reasoning is mandatory»). `effort=low` всё
+  равно тратит ~380 дорогих выходных токенов → капаем `reasoning.max_tokens` (только Narrator).
+- **Prompt-caching у Gemini/OpenRouter слабый** — `cache_control` игнорируется, неявный кэш
+  нестабилен. Оставлен ради учёта стоимости, не как основа экономии.
+- **STT на GPU** требует `cublas64_12.dll` (CUDA runtime) — пока CPU/int8 (~2с на реплику).
+- **adb reverse туннель иногда рвёт WS** на эмуляторе — это не баг приложения; авто-reconnect
+  переподключается. На реальном LAN/wss такого нет.
+- **OSM-тайлы**: `flutter_map` предупреждает, что публичные тайлы не для прод-нагрузки.
+- **Кириллица в консоли**: `$env:PYTHONIOENCODING="utf-8"` + `sys.stdout.reconfigure(...)`.
+- **Драйв эмулятора через adb**: после `monkey`-запуска приложению нужно ~6–13с на холодный
+  старт (splash) — иначе тапы по координатам уходят в пустоту.
+
+---
+
+## 8. Где остановились → следующий шаг
+
+Только что добавили карту с пинами мест и тумблером follow/свободный просмотр (коммит
+`Map: place pins + follow/free-browse toggle`). Бэкенд теперь шлёт `place_name/lat/lon` в
+сообщении `narration`. Всё проверено на эмуляторе.
+
+**Рекомендуемый следующий шаг:** тест на реальном телефоне (живой GPS + русский голос TTS +
+микрофон), затем мультиязычность (этап 7). Перед демо снаружи — перевыпустить ключ
+OpenRouter и поставить лимит в дашборде.
