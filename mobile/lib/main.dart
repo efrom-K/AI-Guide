@@ -11,6 +11,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -65,6 +66,30 @@ class _HomePageState extends State<HomePage> {
   bool _useRealGps = false;
   StreamSubscription<Position>? _gpsSub;
 
+  // On-device TTS — the guide speaks the narration aloud.
+  final FlutterTts _tts = FlutterTts();
+  bool _voice = true; // speaker on/off
+
+  @override
+  void initState() {
+    super.initState();
+    _initTts();
+  }
+
+  Future<void> _initTts() async {
+    await _tts.setLanguage('ru-RU');
+    await _tts.setSpeechRate(0.5); // calmer, guide-like pace
+    await _tts.setPitch(1.0);
+    await _tts.awaitSpeakCompletion(true);
+  }
+
+  // Speak text now, cutting off whatever is playing (seamless switch / barge-in).
+  Future<void> _say(String text) async {
+    if (!_voice) return;
+    await _tts.stop();
+    await _tts.speak(text);
+  }
+
   void _add(String kind, String text) => setState(() => _log.add(Msg(kind, text)));
 
   void _connect() {
@@ -77,10 +102,14 @@ class _HomePageState extends State<HomePage> {
             setState(() => _state = m['state'] as String);
             break;
           case 'narration':
-            _add('guide', m['text'] as String);
+            final t = m['text'] as String;
+            _add('guide', t);
+            _say(t);
             break;
           case 'reply':
-            _add('reply', m['text'] as String);
+            final t = m['text'] as String;
+            _add('reply', t);
+            _say(t);
             break;
           case 'transcript':
             _add('you', m['text'] as String);
@@ -221,15 +250,22 @@ class _HomePageState extends State<HomePage> {
   void _ask() {
     final t = _askCtrl.text.trim();
     if (t.isEmpty || _ch == null) return;
+    _tts.stop(); // barge-in: hush the narration while we ask
     _add('you', t);
     _send({'type': 'utterance', 'text': t});
     _askCtrl.clear();
+  }
+
+  void _toggleVoice() {
+    setState(() => _voice = !_voice);
+    if (!_voice) _tts.stop();
   }
 
   @override
   void dispose() {
     _walkTimer?.cancel();
     _gpsSub?.cancel();
+    _tts.stop();
     _ch?.sink.close();
     super.dispose();
   }
@@ -249,6 +285,11 @@ class _HomePageState extends State<HomePage> {
         title: const Text('🎧 AI Audio Guide'),
         actions: [
           Center(child: Text('  $_state  ', style: const TextStyle(fontSize: 13))),
+          IconButton(
+            tooltip: _voice ? 'Озвучка включена' : 'Озвучка выключена',
+            icon: Icon(_voice ? Icons.volume_up : Icons.volume_off),
+            onPressed: _toggleVoice,
+          ),
         ],
       ),
       body: Padding(
