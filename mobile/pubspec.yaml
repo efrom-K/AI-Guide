@@ -10,10 +10,10 @@ dependencies:
   flutter:
     sdk: flutter
   web_socket_channel: ^3.0.1
+  geolocator: ^13.0.1
 
-  # Reserved for later stages (geolocation, audio, mic):
-  # geolocator: ^13.0.1
-  # flutter_compass: ^0.8.0
+  # Reserved for later stages (compass, audio, mic):
+  # flutter_compass: ^0.8.0   # unmaintained — breaks AGP 8 build; heading comes from GPS course instead
   # just_audio: ^0.9.40
   # record: ^5.1.2
 

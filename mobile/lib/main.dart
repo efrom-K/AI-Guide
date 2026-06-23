@@ -11,6 +11,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 void main() => runApp(const GuideApp());
@@ -59,6 +60,10 @@ class _HomePageState extends State<HomePage> {
   Timer? _walkTimer;
   List<Map<String, double>> _points = [];
   int _idx = 0;
+
+  // Position source: false = simulated route, true = real device GPS.
+  bool _useRealGps = false;
+  StreamSubscription<Position>? _gpsSub;
 
   void _add(String kind, String text) => setState(() => _log.add(Msg(kind, text)));
 
@@ -135,6 +140,9 @@ class _HomePageState extends State<HomePage> {
     return pts;
   }
 
+  // Start whichever source the toggle selects.
+  void _start() => _useRealGps ? _startGps() : _startWalk();
+
   void _startWalk() {
     _points = _buildPoints();
     _idx = 0;
@@ -157,9 +165,56 @@ class _HomePageState extends State<HomePage> {
     setState(() {});
   }
 
+  // ---- real GPS ----------------------------------------------------------
+  // Heading comes from the GPS course (movement vector), not a compass — so
+  // gaze_confidence is always 'low' here, matching the documented fallback
+  // (compass is unreliable when the phone is in a pocket).
+  Future<void> _startGps() async {
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        _add('meta', '⚠ Геолокация выключена в системе');
+        return;
+      }
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.denied ||
+          perm == LocationPermission.deniedForever) {
+        _add('meta', '⚠ Нет разрешения на геолокацию');
+        return;
+      }
+    } catch (e) {
+      _add('meta', '⚠ GPS недоступен на этой платформе: $e');
+      return;
+    }
+
+    const settings = LocationSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 5, // metres between updates
+    );
+    _gpsSub = Geolocator.getPositionStream(locationSettings: settings).listen(
+      (pos) {
+        _send({
+          'type': 'position',
+          'lat': pos.latitude,
+          'lon': pos.longitude,
+          'direction_deg': pos.heading >= 0 ? pos.heading : 0.0,
+          'gaze_confidence': 'low',
+          'pace': pos.speed > 1.5 ? 'fast' : 'slow',
+        });
+      },
+      onError: (e) => _add('meta', '⚠ GPS: $e'),
+    );
+    _add('meta', '· реальный GPS включён');
+    setState(() {});
+  }
+
   void _stopWalk() {
     _walkTimer?.cancel();
     _walkTimer = null;
+    _gpsSub?.cancel();
+    _gpsSub = null;
     setState(() {});
   }
 
@@ -174,6 +229,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _walkTimer?.cancel();
+    _gpsSub?.cancel();
     _ch?.sink.close();
     super.dispose();
   }
@@ -187,7 +243,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final walking = _walkTimer != null;
+    final walking = _walkTimer != null || _gpsSub != null;
     return Scaffold(
       appBar: AppBar(
         title: const Text('🎧 AI Audio Guide'),
@@ -215,13 +271,22 @@ class _HomePageState extends State<HomePage> {
             const SizedBox(height: 8),
             Row(children: [
               FilledButton.tonal(
-                onPressed: _connected && !walking ? _startWalk : null,
-                child: const Text('▶ Прогулка'),
+                onPressed: _connected && !walking ? _start : null,
+                child: Text(_useRealGps ? '▶ GPS' : '▶ Прогулка'),
               ),
               const SizedBox(width: 8),
               FilledButton.tonal(
                 onPressed: walking ? _stopWalk : null,
                 child: const Text('⏸ Стоп'),
+              ),
+              const Spacer(),
+              const Text('GPS', style: TextStyle(fontSize: 13)),
+              Switch(
+                value: _useRealGps,
+                // Can't switch source mid-walk.
+                onChanged: walking
+                    ? null
+                    : (v) => setState(() => _useRealGps = v),
               ),
             ]),
             const SizedBox(height: 8),
