@@ -29,6 +29,18 @@ class Settings(BaseSettings):
     openai_model_narrator: str = ""
     openai_model_companion: str = ""
     openai_model_landmark: str = ""
+    # Provider "thinking"/reasoning effort (OpenRouter). Gemini 3.x requires
+    # reasoning (cannot be disabled); "low" minimises the expensive output tokens
+    # it spends. "" => don't send the param (e.g. LM Studio, which would reject it).
+    openai_reasoning_effort: str = ""  # "" | low | medium | high
+
+    # Token/cost monitoring (USD per million tokens; 0 => unknown, cost not logged).
+    # gemini-3.5-flash on OpenRouter: 1.5 in / 9.0 out.
+    openai_price_in_per_mtok: float = 0.0
+    openai_price_out_per_mtok: float = 0.0
+    # Soft warning threshold on process-cumulative spend (USD). 0 => no warning.
+    # NOTE: a real monthly cap must be set on the OpenRouter dashboard.
+    usd_session_budget: float = 0.0
 
     # Geo
     overpass_url: str = "https://overpass-api.de/api/interpreter"
