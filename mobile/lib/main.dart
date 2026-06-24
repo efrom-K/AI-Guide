@@ -114,22 +114,15 @@ class PlaceMark {
   PlaceMark(this.id, this.point, this.name, this.text);
 }
 
-// Demo route: a real ~3 km Moscow walk, м. Волгоградский проспект -> м. Павелецкая.
-// (lat, lon) waypoints; the sim interpolates between them at walking speed.
+// Demo route: a real Moscow walk, waypoints joined in order (straight segments).
 const List<List<double>> kRoute = [
-  [55.72524, 37.68689], // м. Волгоградский проспект
-  [55.72560, 37.68000],
-  [55.72610, 37.67300],
-  [55.72680, 37.66600],
-  [55.72740, 37.65900],
-  [55.72800, 37.65200],
-  [55.72860, 37.64600],
-  [55.72930, 37.64100],
-  [55.73000, 37.63900],
-  [55.73050, 37.63784], // м. Павелецкая
+  [55.725789, 37.685192],
+  [55.728789, 37.677015],
+  [55.741959, 37.653943],
+  [55.732312, 37.639737],
 ];
 
-const double kWalkSpeedMps = 1.4; // human walking pace
+const double kWalkSpeedMps = 1.95; // ~7 km/h (brisk human pace)
 const double kStepM = 8; // metres between simulated GPS fixes (matches the real distanceFilter)
 
 class HomePage extends StatefulWidget {
@@ -161,6 +154,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   // On-device TTS — the guide speaks the narration aloud.
   final FlutterTts _tts = FlutterTts();
   bool _voice = true; // speaker on/off
+  String? _pending; // newest narration waiting its turn (we never cut a line mid-sentence)
   late String _lang; // current guide language code (en|ru|es|…)
 
   // Microphone — ask the guide by voice (barge-in).
@@ -204,8 +198,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     await _tts.setPitch(1.0);
     await _tts.awaitSpeakCompletion(true);
     _tts.setStartHandler(() => setState(() => _speaking = true));
-    _tts.setCompletionHandler(() => setState(() => _speaking = false));
+    _tts.setCompletionHandler(() {
+      setState(() => _speaking = false);
+      // The line finished; if newer narration arrived meanwhile, speak the latest.
+      final next = _pending;
+      _pending = null;
+      if (next != null && _voice) _speakNarration(next);
+    });
     _tts.setCancelHandler(() => setState(() => _speaking = false));
+  }
+
+  // Speak narration without cutting an in-progress line: queue only the newest
+  // (drop stale middles) so the story stays coherent and still fresh.
+  Future<void> _speakNarration(String text) async {
+    if (!_voice) return;
+    if (_speaking) {
+      _pending = text;
+      return;
+    }
+    setState(() => _speaking = true); // claim synchronously to avoid overlap
+    await _tts.speak(text);
   }
 
   // Point the TTS voice at the given language (best-effort; unknown tags are no-ops).
@@ -230,9 +242,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
   }
 
-  // Speak text now, cutting off whatever is playing (seamless switch / barge-in).
+  // Speak now, cutting off whatever is playing (used for replies / barge-in answers).
   Future<void> _say(String text) async {
     if (!_voice) return;
+    _pending = null;
     await _tts.stop();
     await _tts.speak(text);
   }
@@ -290,7 +303,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               _curIsReply = false;
             });
             _add('guide', t);
-            _say(t);
+            _speakNarration(t); // don't cut the current line mid-sentence
             break;
           case 'reply':
             final t = m['text'] as String;
@@ -339,6 +352,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _wantConnected = false;
     _reconnectTimer?.cancel();
     _stopWalk();
+    _pending = null;
     _tts.stop();
     _ch?.sink.close();
     setState(() {
@@ -483,6 +497,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void _ask() {
     final t = _askCtrl.text.trim();
     if (t.isEmpty || _ch == null) return;
+    _pending = null;
     _tts.stop(); // barge-in: hush the narration while we ask
     _add('you', t);
     _send({'type': 'utterance', 'text': t});
@@ -491,7 +506,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   void _toggleVoice() {
     setState(() => _voice = !_voice);
-    if (!_voice) _tts.stop();
+    if (!_voice) {
+      _pending = null;
+      _tts.stop();
+    }
   }
 
   // ---- voice barge-in (mic) ---------------------------------------------
@@ -510,6 +528,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _add('meta', l.metaMicNoPermission);
       return;
     }
+    _pending = null;
     _tts.stop(); // barge-in: hush the guide while the user speaks
     final dir = await getTemporaryDirectory();
     final path = '${dir.path}/ask.wav';

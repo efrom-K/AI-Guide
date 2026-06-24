@@ -35,7 +35,10 @@ from app.shared.schemas import (
 
 _HISTORY_CAP = 12
 _CONVO_CAP = 20
-_MAX_ELABORATE = 2  # follow-ups per place when nothing new is nearby
+# Follow-ups per place when nothing new is nearby. High on purpose: while the area
+# is empty the guide keeps adding to the current place's story until the Narrator
+# runs out (returns silence), rather than going quiet after a couple of lines.
+_MAX_ELABORATE = 6
 
 
 class State(StrEnum):
