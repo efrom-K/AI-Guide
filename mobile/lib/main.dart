@@ -20,17 +20,55 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'l10n/app_localizations.dart';
+
 void main() => runApp(const GuideApp());
 
-class GuideApp extends StatelessWidget {
+// Supported guide languages: code -> (native label for the picker, TTS BCP-47 tag).
+// Codes are ISO-639-1 and match the backend's languages.py / Whisper.
+const kLangs = <String, ({String label, String tts})>{
+  'en': (label: 'English', tts: 'en-US'),
+  'ru': (label: 'Русский', tts: 'ru-RU'),
+  'es': (label: 'Español', tts: 'es-ES'),
+  'fr': (label: 'Français', tts: 'fr-FR'),
+  'de': (label: 'Deutsch', tts: 'de-DE'),
+  'it': (label: 'Italiano', tts: 'it-IT'),
+  'pt': (label: 'Português', tts: 'pt-BR'),
+  'zh': (label: '中文', tts: 'zh-CN'),
+};
+
+// Map an arbitrary locale code to a supported one, else fall back to English.
+String normLang(String code) => kLangs.containsKey(code) ? code : 'en';
+
+class GuideApp extends StatefulWidget {
   const GuideApp({super.key});
+
+  @override
+  State<GuideApp> createState() => _GuideAppState();
+}
+
+class _GuideAppState extends State<GuideApp> {
+  late Locale _locale;
+
+  @override
+  void initState() {
+    super.initState();
+    // Auto-select the system language; fall back to English if unsupported.
+    final sys = WidgetsBinding.instance.platformDispatcher.locale.languageCode;
+    _locale = Locale(normLang(sys));
+  }
+
+  void _setLocale(String code) => setState(() => _locale = Locale(normLang(code)));
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'AI Audio Guide',
       theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-      home: const HomePage(),
+      locale: _locale,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: HomePage(locale: _locale, onLocaleChanged: _setLocale),
     );
   }
 }
@@ -58,7 +96,10 @@ const List<List<double>> kRoute = [
 ];
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({super.key, required this.locale, required this.onLocaleChanged});
+
+  final Locale locale; // current UI/guide language
+  final void Function(String code) onLocaleChanged; // swap MaterialApp.locale
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -83,6 +124,7 @@ class _HomePageState extends State<HomePage> {
   // On-device TTS — the guide speaks the narration aloud.
   final FlutterTts _tts = FlutterTts();
   bool _voice = true; // speaker on/off
+  late String _lang; // current guide language code (en|ru|es|…)
 
   // Microphone — ask the guide by voice (barge-in).
   final AudioRecorder _rec = AudioRecorder();
@@ -108,17 +150,40 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _lang = normLang(widget.locale.languageCode);
     _initTts();
   }
 
   Future<void> _initTts() async {
-    await _tts.setLanguage('ru-RU');
+    await _applyTtsLanguage(_lang);
     await _tts.setSpeechRate(0.5); // calmer, guide-like pace
     await _tts.setPitch(1.0);
     await _tts.awaitSpeakCompletion(true);
     _tts.setStartHandler(() => setState(() => _speaking = true));
     _tts.setCompletionHandler(() => setState(() => _speaking = false));
     _tts.setCancelHandler(() => setState(() => _speaking = false));
+  }
+
+  // Point the TTS voice at the given language (best-effort; unknown tags are no-ops).
+  Future<void> _applyTtsLanguage(String code) async {
+    try {
+      await _tts.setLanguage(kLangs[code]!.tts);
+    } catch (_) {/* some platforms lack the voice — the feed still shows the text */}
+  }
+
+  // User picked a language: swap UI strings + TTS voice + tell the backend.
+  Future<void> _changeLanguage(String code) async {
+    code = normLang(code);
+    if (code == _lang) return;
+    final l = AppLocalizations.of(context)!; // capture before awaits
+    setState(() => _lang = code);
+    widget.onLocaleChanged(code); // rebuilds MaterialApp with the new locale
+    await _applyTtsLanguage(code);
+    if (_connected) _send({'type': 'language', 'language': code});
+    final ok = await _tts.isLanguageAvailable(kLangs[code]!.tts);
+    if (ok != true && mounted) {
+      _add('meta', l.metaVoiceUnavailable(kLangs[code]!.label));
+    }
   }
 
   // Speak text now, cutting off whatever is playing (seamless switch / barge-in).
@@ -195,8 +260,11 @@ class _HomePageState extends State<HomePage> {
       _ch = ch;
       _connected = true;
       _state = '—';
-      _add('meta', '· подключение ${_urlCtrl.text}');
+      _add('meta', AppLocalizations.of(context)!.metaConnecting(_urlCtrl.text));
     });
+    // New WS connection => fresh backend session; (re)send the language first so
+    // narration + STT use it before any position/audio arrives.
+    _send({'type': 'language', 'language': _lang});
   }
 
   // Socket dropped: reflect it, and auto-reconnect if the user still wants to be on.
@@ -205,7 +273,7 @@ class _HomePageState extends State<HomePage> {
     if (!_wantConnected) return;
     final delay = Duration(seconds: (1 << _retries).clamp(1, 16)); // 1,2,4,8,16s
     _retries++;
-    _add('meta', '· связь потеряна, переподключение через ${delay.inSeconds}s…');
+    _add('meta', AppLocalizations.of(context)!.metaConnectionLost(delay.inSeconds));
     _reconnectTimer = Timer(delay, () {
       if (_wantConnected) _connect();
     });
@@ -305,9 +373,10 @@ class _HomePageState extends State<HomePage> {
   // gaze_confidence is always 'low' here, matching the documented fallback
   // (compass is unreliable when the phone is in a pocket).
   Future<void> _startGps() async {
+    final l = AppLocalizations.of(context)!;
     try {
       if (!await Geolocator.isLocationServiceEnabled()) {
-        _add('meta', '⚠ Геолокация выключена в системе');
+        _add('meta', l.metaGeoDisabled);
         return;
       }
       var perm = await Geolocator.checkPermission();
@@ -316,11 +385,11 @@ class _HomePageState extends State<HomePage> {
       }
       if (perm == LocationPermission.denied ||
           perm == LocationPermission.deniedForever) {
-        _add('meta', '⚠ Нет разрешения на геолокацию');
+        _add('meta', l.metaGeoNoPermission);
         return;
       }
     } catch (e) {
-      _add('meta', '⚠ GPS недоступен на этой платформе: $e');
+      _add('meta', l.metaGpsUnavailable('$e'));
       return;
     }
 
@@ -335,9 +404,9 @@ class _HomePageState extends State<HomePage> {
         pos.heading >= 0 ? pos.heading : 0.0,
         pos.speed > 1.5 ? 'fast' : 'slow',
       ),
-      onError: (e) => _add('meta', '⚠ GPS: $e'),
+      onError: (e) => _add('meta', l.metaGpsError('$e')),
     );
-    _add('meta', '· реальный GPS включён');
+    _add('meta', l.metaRealGpsOn);
     setState(() {});
   }
 
@@ -374,8 +443,9 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _startRec() async {
     if (_ch == null) return;
+    final l = AppLocalizations.of(context)!; // capture before awaits
     if (!await _rec.hasPermission()) {
-      _add('meta', '⚠ Нет доступа к микрофону');
+      _add('meta', l.metaMicNoPermission);
       return;
     }
     _tts.stop(); // barge-in: hush the guide while the user speaks
@@ -389,13 +459,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _stopRecAndSend() async {
+    final l = AppLocalizations.of(context)!; // capture before awaits
     final path = await _rec.stop();
     setState(() => _recording = false);
     if (path == null) return;
     final bytes = await File(path).readAsBytes();
     if (bytes.isEmpty) return;
     _send({'type': 'audio', 'data_b64': base64Encode(bytes), 'format': 'wav'});
-    _add('meta', '· отправлено голосом (${bytes.length} Б)');
+    _add('meta', l.metaSentByVoice(bytes.length));
   }
 
   @override
@@ -420,18 +491,19 @@ class _HomePageState extends State<HomePage> {
 
   // Coloured chip for the agent state (or connection status).
   Widget _statusChip() {
+    final l = AppLocalizations.of(context)!;
     final (label, color, icon) = switch (true) {
-      _ when !_connected && _wantConnected => ('переподключение…', Colors.orange, Icons.sync),
-      _ when !_connected => ('не подключено', Colors.grey, Icons.cloud_off),
-      _ when _speaking => ('говорит', Colors.indigo, Icons.graphic_eq),
+      _ when !_connected && _wantConnected => (l.chipReconnecting, Colors.orange, Icons.sync),
+      _ when !_connected => (l.chipNotConnected, Colors.grey, Icons.cloud_off),
+      _ when _speaking => (l.chipSpeaking, Colors.indigo, Icons.graphic_eq),
       _ => switch (_state) {
-          'scoring' => ('анализ', Colors.blueGrey, Icons.search),
-          'narrating' => ('рассказ', Colors.indigo, Icons.record_voice_over),
-          'switching' => ('переключение', Colors.indigo, Icons.swap_horiz),
-          'listening' => ('слушает', Colors.teal, Icons.hearing),
-          'answering' => ('отвечает', Colors.teal, Icons.question_answer),
-          'expanding' => ('расширяет радиус', Colors.blueGrey, Icons.zoom_out_map),
-          _ => ('готов', Colors.green, Icons.check_circle),
+          'scoring' => (l.chipScoring, Colors.blueGrey, Icons.search),
+          'narrating' => (l.chipNarrating, Colors.indigo, Icons.record_voice_over),
+          'switching' => (l.chipSwitching, Colors.indigo, Icons.swap_horiz),
+          'listening' => (l.chipListening, Colors.teal, Icons.hearing),
+          'answering' => (l.chipAnswering, Colors.teal, Icons.question_answer),
+          'expanding' => (l.chipExpanding, Colors.blueGrey, Icons.zoom_out_map),
+          _ => (l.chipReady, Colors.green, Icons.check_circle),
         },
     };
     return Padding(
@@ -504,7 +576,9 @@ class _HomePageState extends State<HomePage> {
             bottom: 8,
             child: FloatingActionButton.small(
               heroTag: 'follow',
-              tooltip: _follow ? 'Следую за вами' : 'Свободный просмотр — нажмите, чтобы следовать',
+              tooltip: _follow
+                  ? AppLocalizations.of(context)!.following
+                  : AppLocalizations.of(context)!.freeBrowse,
               backgroundColor: _follow ? Colors.indigo : Colors.white,
               foregroundColor: _follow ? Colors.white : Colors.black54,
               onPressed: () {
@@ -521,19 +595,30 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context)!;
     final walking = _walkTimer != null || _gpsSub != null;
     return Scaffold(
       appBar: AppBar(
         title: const Text('🎧 AI Audio Guide'),
         actions: [
           Center(child: _statusChip()),
+          PopupMenuButton<String>(
+            tooltip: l.language,
+            icon: const Icon(Icons.language),
+            initialValue: _lang,
+            onSelected: _changeLanguage,
+            itemBuilder: (_) => [
+              for (final e in kLangs.entries)
+                PopupMenuItem(value: e.key, child: Text('${e.value.label} (${e.key})')),
+            ],
+          ),
           IconButton(
-            tooltip: _log.isEmpty ? 'Лента пуста' : 'Очистить ленту',
+            tooltip: _log.isEmpty ? l.feedEmpty : l.clearFeed,
             icon: const Icon(Icons.delete_sweep_outlined),
             onPressed: _log.isEmpty ? null : () => setState(_log.clear),
           ),
           IconButton(
-            tooltip: _voice ? 'Озвучка включена' : 'Озвучка выключена',
+            tooltip: _voice ? l.voiceOn : l.voiceOff,
             icon: Icon(_voice ? Icons.volume_up : Icons.volume_off),
             onPressed: _toggleVoice,
           ),
@@ -547,28 +632,28 @@ class _HomePageState extends State<HomePage> {
               Expanded(
                 child: TextField(
                   controller: _urlCtrl,
-                  decoration: const InputDecoration(labelText: 'WebSocket URL', isDense: true),
+                  decoration: InputDecoration(labelText: l.wsUrl, isDense: true),
                 ),
               ),
               const SizedBox(width: 8),
               FilledButton(
                 onPressed: _wantConnected ? _disconnect : _connect,
-                child: Text(_wantConnected ? 'Отключиться' : 'Подключиться'),
+                child: Text(_wantConnected ? l.disconnect : l.connect),
               ),
             ]),
             const SizedBox(height: 8),
             Row(children: [
               FilledButton.tonal(
                 onPressed: _connected && !walking ? _start : null,
-                child: Text(_useRealGps ? '▶ GPS' : '▶ Прогулка'),
+                child: Text(_useRealGps ? l.startGps : l.startWalk),
               ),
               const SizedBox(width: 8),
               FilledButton.tonal(
                 onPressed: walking ? _stopWalk : null,
-                child: const Text('⏸ Стоп'),
+                child: Text(l.stop),
               ),
               const Spacer(),
-              const Text('GPS', style: TextStyle(fontSize: 13)),
+              Text(l.gps, style: const TextStyle(fontSize: 13)),
               Switch(
                 value: _useRealGps,
                 // Can't switch source mid-walk.
@@ -588,11 +673,11 @@ class _HomePageState extends State<HomePage> {
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: _log.isEmpty
-                    ? const Center(
+                    ? Center(
                         child: Text(
-                          'Подключитесь и нажмите «Прогулка».\nГид расскажет про места вокруг.',
+                          l.emptyHint,
                           textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.black38),
+                          style: const TextStyle(color: Colors.black38),
                         ),
                       )
                     : ListView.builder(
@@ -636,7 +721,7 @@ class _HomePageState extends State<HomePage> {
             Row(children: [
               // Push to talk: tap to record, tap again to send.
               IconButton.filledTonal(
-                tooltip: _recording ? 'Остановить и отправить' : 'Спросить голосом',
+                tooltip: _recording ? l.micStop : l.micAsk,
                 isSelected: _recording,
                 style: _recording
                     ? IconButton.styleFrom(backgroundColor: Colors.red.shade100)
@@ -649,15 +734,15 @@ class _HomePageState extends State<HomePage> {
               Expanded(
                 child: TextField(
                   controller: _askCtrl,
-                  decoration: const InputDecoration(
-                    hintText: 'Спросить гида… (напр. пропускай магазины)',
+                  decoration: InputDecoration(
+                    hintText: l.askHint,
                     isDense: true,
                   ),
                   onSubmitted: (_) => _ask(),
                 ),
               ),
               const SizedBox(width: 8),
-              FilledButton(onPressed: _connected ? _ask : null, child: const Text('Спросить')),
+              FilledButton(onPressed: _connected ? _ask : null, child: Text(l.ask)),
             ]),
           ],
         ),

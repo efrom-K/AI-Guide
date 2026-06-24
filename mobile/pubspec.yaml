@@ -9,6 +9,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:    # localized Material/Cupertino widgets + gen-l10n runtime
+    sdk: flutter
+  intl: ^0.20.2             # ICU message formatting for the generated AppLocalizations
   web_socket_channel: ^3.0.1
   geolocator: ^13.0.1
   flutter_tts: ^4.2.0       # on-device TTS — the guide speaks the narration aloud
@@ -27,3 +30,4 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  generate: true            # run gen-l10n from lib/l10n/*.arb on build
