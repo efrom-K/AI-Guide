@@ -1,0 +1,7 @@
+# Automatic HTTPS via Let's Encrypt. The sslip.io hostname resolves to the server IP,
+# so no domain purchase is needed. Caddy proxies everything (incl. the /ws WebSocket,
+# upgrade handled automatically) to the backend container.
+178.83.121.62.sslip.io {
+	encode zstd gzip
+	reverse_proxy backend:8000
+}
