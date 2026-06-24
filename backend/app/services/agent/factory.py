@@ -67,5 +67,6 @@ def build_orchestrator(store: StateStore | None = None) -> Orchestrator:
         # enriches every candidate inline (instant).
         enrich_top_k=settings.enrich_top_k if web else None,
         enrich_timeout_s=settings.enrich_timeout_s if web else None,
+        enrich_min_weight=settings.enrich_min_weight if web else 0.0,
     )
     return Orchestrator(_discovery(), pipeline, companion, store or default_store())

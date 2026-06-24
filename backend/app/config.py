@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     web_search_max_tokens: int = 400
     enrich_top_k: int = 2  # how many top-ranked candidates to enrich per tick
     enrich_timeout_s: float = 9.0  # web search needs ~5-7s; give it time so facts arrive
+    # Only pay for a web search on places worth it: type_weight >= this, or a
+    # wikidata/wikipedia tag. Ordinary places (shops, plain buildings) get a brief
+    # name-only mention instead — web search is ~85% of per-place cost.
+    enrich_min_weight: float = 0.45
     enrich_cache_path: str = ""  # "" => memory only; a path persists facts across runs
 
     # STT (voice barge-in)

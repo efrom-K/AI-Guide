@@ -41,6 +41,16 @@ class StepResult:
     significance: Significance | None
 
 
+def _worth_enriching(c: Candidate, min_weight: float) -> bool:
+    """Pay for a web search only on places likely to have an interesting story:
+    a wikidata/wikipedia tag, or a type weight above the threshold. Shops, plain
+    buildings, hostels etc. get a brief name-only mention (no paid search)."""
+    tags = c.place.tags
+    if tags.get("wikidata") or tags.get("wikipedia"):
+        return True
+    return c.type_weight >= min_weight
+
+
 class TextPipeline:
     def __init__(
         self,
@@ -51,6 +61,7 @@ class TextPipeline:
         language: str = "ru",
         enrich_top_k: int | None = None,
         enrich_timeout_s: float | None = None,
+        enrich_min_weight: float = 0.0,
     ) -> None:
         self.scorer = scorer
         self.narrator = narrator
@@ -59,6 +70,7 @@ class TextPipeline:
         self.language = language
         self.enrich_top_k = enrich_top_k
         self.enrich_timeout_s = enrich_timeout_s
+        self.enrich_min_weight = enrich_min_weight
 
     async def step(
         self,
@@ -76,8 +88,13 @@ class TextPipeline:
         lang = language or self.language
         addr = address or Address()
         ctx = ", ".join(p for p in (addr.city, addr.country) if p) or None
+        # Only spend a web search on places worth it (cost control); the rest still
+        # get scored/narrated, just with a brief name-only line.
+        to_enrich = candidates
+        if self.enrich_min_weight > 0:
+            to_enrich = [c for c in candidates if _worth_enriching(c, self.enrich_min_weight)]
         await prefetch(
-            candidates,
+            to_enrich,
             self.enricher,
             self.cache,
             top_k=self.enrich_top_k,
