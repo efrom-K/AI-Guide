@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     web_search_max_results: int = 2  # web results per place (OpenRouter bills per result)
     web_search_max_tokens: int = 400
     enrich_top_k: int = 2  # how many top-ranked candidates to enrich per tick
-    enrich_timeout_s: float = 4.0  # budget for a tick's enrichment; partial on timeout
+    enrich_timeout_s: float = 9.0  # web search needs ~5-7s; give it time so facts arrive
     enrich_cache_path: str = ""  # "" => memory only; a path persists facts across runs
 
     # STT (voice barge-in)
