@@ -11,17 +11,21 @@ an **OpenStreetMap** map, lets you **ask by voice or text**, and runs in **8 lan
   backend (`{type:"language"}`) on every (re)connect. On first launch it auto-selects the
   **system language**, falling back to English. UI strings come from `lib/l10n/*.arb` via
   Flutter `gen-l10n`.
-- **Position source** — simulated Red Square walk *or* real device GPS (toggle). Heading
-  comes from the GPS course; `gaze_confidence=low` (the documented compass-in-pocket fallback).
-- **Spoken narration** — on-device TTS (`flutter_tts`, voice follows the selected language).
-  Speaker toggle in the app bar; asking (voice or text) hushes the guide (barge-in).
-- **Voice barge-in** — tap-to-talk mic (`record`): records 16 kHz WAV, sends it to the
-  backend STT, the reply is spoken back.
-- **Map** — OpenStreetMap via `flutter_map` (no API key): your position + bearing arrow,
-  a pin for each narrated place (current one highlighted), and a **follow / free-browse**
-  toggle (panning the map drops follow; the FAB re-centres).
-- **UX** — coloured agent-state chip, auto-reconnect with backoff, live position/place
-  footer, clear-feed button, auto-scroll.
+- **Map-first dark UI** — the map fills the screen (CARTO dark tiles via `flutter_map`, no
+  API key) with your bearing arrow and a pin per narrated place (current one highlighted).
+  A glassy bottom card shows the agent status (pulsing dot), the current place + narration,
+  and **one primary action** that connects-and-walks / stops. Floating top pills: 🎧 brand,
+  language, speaker, settings. A **follow / free-browse** FAB re-centres after you pan.
+- **Position source** — **real device GPS by default**; a *Simulated walk* toggle in
+  **Settings** replays the Red Square route for demos / the emulator. Heading comes from the
+  GPS course; `gaze_confidence=low` (the documented compass-in-pocket fallback).
+- **Spoken narration** — on-device TTS (`flutter_tts`, voice follows the selected language);
+  speaker toggle up top; asking (voice or text) hushes the guide (barge-in).
+- **Ask the guide** — tap-to-talk mic (`record`, 16 kHz WAV → backend STT) or the keyboard
+  button for a typed question; the reply is shown and spoken back.
+- **Settings & history** — dev controls (WebSocket URL, simulated-walk toggle) live in a
+  Settings sheet; the full message feed is a swipe-up **History** sheet. Auto-reconnect with
+  backoff is built in.
 
 ## Platforms
 - ✅ **Android** — builds an APK, runs on the `guide_emu` emulator (and real devices).

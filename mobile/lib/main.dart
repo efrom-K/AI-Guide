@@ -1,10 +1,10 @@
-// AI Audio Guide — Flutter client (web/desktop).
+// AI Audio Guide — Flutter client.
 //
-// Thin WebSocket client: connect to the backend /ws, simulate a walk along a
-// route (sends positions), and show the guide's narration/replies. On mobile
-// (Stage 6b) the simulated walk is replaced by real GPS + compass + mic.
-//
-//   cd mobile && flutter run -d chrome      (backend must be running on :8000)
+// Map-first, dark, minimalist. The map fills the screen; a glassy bottom card
+// shows the agent status, the current place + narration, one primary action
+// (connect+walk / stop) and the mic. Dev controls (WS URL, simulated walk) live
+// in a Settings sheet. Real device GPS is the default; the simulated Red Square
+// walk is a demo fallback (emulator / no GPS).
 
 import 'dart:async';
 import 'dart:convert';
@@ -40,6 +40,23 @@ const kLangs = <String, ({String label, String tts})>{
 // Map an arbitrary locale code to a supported one, else fall back to English.
 String normLang(String code) => kLangs.containsKey(code) ? code : 'en';
 
+// True under `flutter test` — lets us skip live map-tile network there.
+bool _underTest() {
+  try {
+    return Platform.environment.containsKey('FLUTTER_TEST');
+  } catch (_) {
+    return false; // web has no Platform.environment
+  }
+}
+
+// Palette — dark, soft teal accent.
+const _accent = Color(0xFF2DD4BF); // teal
+const _cardBg = Color(0xF21A1B1F); // glassy dark card over the map
+const _pillBg = Color(0xCC18191D);
+const _pinCurrent = Color(0xFFFBBF24); // amber — the place being narrated
+const _pinPast = Color(0xFF64748B); // slate — already seen
+const _userArrow = Color(0xFF22D3EE); // cyan — the user's bearing
+
 class GuideApp extends StatefulWidget {
   const GuideApp({super.key});
 
@@ -62,9 +79,18 @@ class _GuideAppState extends State<GuideApp> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = ColorScheme.fromSeed(
+      seedColor: _accent,
+      brightness: Brightness.dark,
+    ).copyWith(surface: const Color(0xFF0E0F12));
     return MaterialApp(
       title: 'AI Audio Guide',
-      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: scheme,
+        useMaterial3: true,
+        scaffoldBackgroundColor: const Color(0xFF0E0F12),
+      ),
       locale: _locale,
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
@@ -117,8 +143,8 @@ class _HomePageState extends State<HomePage> {
   List<Map<String, double>> _points = [];
   int _idx = 0;
 
-  // Position source: false = simulated route, true = real device GPS.
-  bool _useRealGps = false;
+  // Position source: false = real device GPS (default), true = simulated route.
+  bool _simulate = false;
   StreamSubscription<Position>? _gpsSub;
 
   // On-device TTS — the guide speaks the narration aloud.
@@ -130,7 +156,7 @@ class _HomePageState extends State<HomePage> {
   final AudioRecorder _rec = AudioRecorder();
   bool _recording = false;
 
-  // Map (OpenStreetMap via flutter_map).
+  // Map (CARTO dark tiles via flutter_map).
   final MapController _map = MapController();
   bool _mapReady = false;
   bool _follow = true; // auto-centre on the user vs free pan
@@ -139,13 +165,17 @@ class _HomePageState extends State<HomePage> {
   final List<PlaceMark> _places = []; // narrated places pinned on the map
   String? _currentPlaceId; // the place being narrated now (highlighted)
 
-  // UI state.
+  // What the bottom card shows now.
+  String? _curTitle; // current place name
+  String? _curText; // current narration / reply text
+  bool _curIsReply = false;
+
   bool _speaking = false; // TTS currently talking
-  String? _lastPos; // "55.7525, 37.6231"
-  String? _lastPlace; // place_id of the current narration
   bool _wantConnected = false; // user intends a live connection (drives auto-reconnect)
   Timer? _reconnectTimer;
   int _retries = 0;
+
+  bool get _active => _walkTimer != null || _gpsSub != null;
 
   @override
   void initState() {
@@ -168,7 +198,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _applyTtsLanguage(String code) async {
     try {
       await _tts.setLanguage(kLangs[code]!.tts);
-    } catch (_) {/* some platforms lack the voice — the feed still shows the text */}
+    } catch (_) {/* some platforms lack the voice — the card still shows the text */}
   }
 
   // User picked a language: swap UI strings + TTS voice + tell the backend.
@@ -195,14 +225,10 @@ class _HomePageState extends State<HomePage> {
 
   void _add(String kind, String text) {
     setState(() => _log.add(Msg(kind, text)));
-    // Keep the newest message in view.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        );
+        _scroll.animateTo(_scroll.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
       }
     });
   }
@@ -235,13 +261,21 @@ class _HomePageState extends State<HomePage> {
             break;
           case 'narration':
             final t = m['text'] as String;
-            setState(() => _lastPlace = m['place_id'] as String?);
             _addPlace(m); // pin it on the map
+            setState(() {
+              _curTitle = m['place_name'] as String?;
+              _curText = t;
+              _curIsReply = false;
+            });
             _add('guide', t);
             _say(t);
             break;
           case 'reply':
             final t = m['text'] as String;
+            setState(() {
+              _curText = t;
+              _curIsReply = true;
+            });
             _add('reply', t);
             _say(t);
             break;
@@ -294,6 +328,17 @@ class _HomePageState extends State<HomePage> {
 
   void _send(Map<String, dynamic> obj) => _ch?.sink.add(jsonEncode(obj));
 
+  // Primary action: one button to start the experience and to stop it.
+  void _primary() {
+    if (_active) {
+      _stopWalk();
+      _disconnect();
+    } else {
+      if (!_connected) _connect();
+      _start();
+    }
+  }
+
   // ---- walk simulation ---------------------------------------------------
   static double _rad(double d) => d * pi / 180;
 
@@ -320,11 +365,7 @@ class _HomePageState extends State<HomePage> {
       final len = _dist(a, b), brg = _bearing(a, b);
       for (var t = 0.0; t < len; t += stepM) {
         final f = t / len;
-        pts.add({
-          'lat': a[0] + (b[0] - a[0]) * f,
-          'lon': a[1] + (b[1] - a[1]) * f,
-          'dir': brg,
-        });
+        pts.add({'lat': a[0] + (b[0] - a[0]) * f, 'lon': a[1] + (b[1] - a[1]) * f, 'dir': brg});
       }
     }
     final last = kRoute.last;
@@ -333,7 +374,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   // Start whichever source the toggle selects.
-  void _start() => _useRealGps ? _startGps() : _startWalk();
+  void _start() => _simulate ? _startWalk() : _startGps();
 
   void _startWalk() {
     _points = _buildPoints();
@@ -350,7 +391,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {});
   }
 
-  // Send a position and reflect it on the map + status footer.
+  // Send a position and reflect it on the map.
   void _sendPosition(double lat, double lon, double dir, String pace) {
     _send({
       'type': 'position',
@@ -363,7 +404,6 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _here = LatLng(lat, lon);
       _heading = dir;
-      _lastPos = '${lat.toStringAsFixed(5)}, ${lon.toStringAsFixed(5)}';
     });
     if (_mapReady && _follow) _map.move(_here, _map.camera.zoom); // keep user centred
   }
@@ -383,8 +423,7 @@ class _HomePageState extends State<HomePage> {
       if (perm == LocationPermission.denied) {
         perm = await Geolocator.requestPermission();
       }
-      if (perm == LocationPermission.denied ||
-          perm == LocationPermission.deniedForever) {
+      if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
         _add('meta', l.metaGeoNoPermission);
         return;
       }
@@ -393,10 +432,7 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    const settings = LocationSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 5, // metres between updates
-    );
+    const settings = LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5);
     _gpsSub = Geolocator.getPositionStream(locationSettings: settings).listen(
       (pos) => _sendPosition(
         pos.latitude,
@@ -482,110 +518,324 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  Color _bg(String kind) => switch (kind) {
-        'guide' => const Color(0xFFEEF2FF),
-        'reply' => const Color(0xFFECFDF5),
-        'you' => const Color(0xFFF3F4F6),
-        _ => const Color(0xFFFFFBEB),
-      };
-
-  // Coloured chip for the agent state (or connection status).
-  Widget _statusChip() {
-    final l = AppLocalizations.of(context)!;
-    final (label, color, icon) = switch (true) {
-      _ when !_connected && _wantConnected => (l.chipReconnecting, Colors.orange, Icons.sync),
-      _ when !_connected => (l.chipNotConnected, Colors.grey, Icons.cloud_off),
-      _ when _speaking => (l.chipSpeaking, Colors.indigo, Icons.graphic_eq),
-      _ => switch (_state) {
-          'scoring' => (l.chipScoring, Colors.blueGrey, Icons.search),
-          'narrating' => (l.chipNarrating, Colors.indigo, Icons.record_voice_over),
-          'switching' => (l.chipSwitching, Colors.indigo, Icons.swap_horiz),
-          'listening' => (l.chipListening, Colors.teal, Icons.hearing),
-          'answering' => (l.chipAnswering, Colors.teal, Icons.question_answer),
-          'expanding' => (l.chipExpanding, Colors.blueGrey, Icons.zoom_out_map),
-          _ => (l.chipReady, Colors.green, Icons.check_circle),
-        },
+  // -- status -------------------------------------------------------------
+  ({String label, Color color, bool active}) _status(AppLocalizations l) {
+    if (!_connected && _wantConnected) return (label: l.chipReconnecting, color: Colors.orange, active: true);
+    if (!_connected) return (label: l.chipNotConnected, color: Colors.grey, active: false);
+    if (_speaking) return (label: l.chipSpeaking, color: _accent, active: true);
+    return switch (_state) {
+      'scoring' => (label: l.chipScoring, color: Colors.lightBlue, active: true),
+      'narrating' => (label: l.chipNarrating, color: _accent, active: true),
+      'switching' => (label: l.chipSwitching, color: _accent, active: true),
+      'listening' => (label: l.chipListening, color: Colors.tealAccent, active: true),
+      'answering' => (label: l.chipAnswering, color: Colors.tealAccent, active: true),
+      'expanding' => (label: l.chipExpanding, color: Colors.lightBlue, active: true),
+      _ => (label: l.chipReady, color: const Color(0xFF34D399), active: false),
     };
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      child: Chip(
-        visualDensity: VisualDensity.compact,
-        backgroundColor: color.withValues(alpha: 0.12),
-        side: BorderSide(color: color.withValues(alpha: 0.4)),
-        avatar: Icon(icon, size: 16, color: color),
-        label: Text(label, style: TextStyle(fontSize: 12, color: color)),
+  }
+
+  Widget _statusPill(AppLocalizations l) {
+    final s = _status(l);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: s.color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: s.color.withValues(alpha: 0.45)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        _PulsingDot(color: s.color, active: s.active),
+        const SizedBox(width: 8),
+        Text(s.label, style: TextStyle(fontSize: 12.5, color: s.color, fontWeight: FontWeight.w600)),
+      ]),
+    );
+  }
+
+  // -- map ----------------------------------------------------------------
+  Widget _mapView() {
+    return FlutterMap(
+      mapController: _map,
+      options: MapOptions(
+        initialCenter: _here,
+        initialZoom: 16,
+        onMapReady: () => _mapReady = true,
+        onPositionChanged: (camera, hasGesture) {
+          if (hasGesture && _follow) setState(() => _follow = false);
+        },
+      ),
+      children: [
+        if (!_underTest())
+          TileLayer(
+            urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+            subdomains: const ['a', 'b', 'c'],
+            userAgentPackageName: 'com.example.ai_audio_guide',
+          ),
+        MarkerLayer(markers: [
+          for (final p in _places)
+            Marker(
+              point: p.point,
+              width: 30,
+              height: 30,
+              child: Icon(
+                Icons.location_on,
+                size: p.id == _currentPlaceId ? 30 : 22,
+                color: p.id == _currentPlaceId ? _pinCurrent : _pinPast,
+              ),
+            ),
+          Marker(
+            point: _here,
+            width: 44,
+            height: 44,
+            child: Transform.rotate(
+              angle: _heading * pi / 180,
+              child: const Icon(Icons.navigation, color: _userArrow, size: 34),
+            ),
+          ),
+        ]),
+        const RichAttributionWidget(
+          attributions: [TextSourceAttribution('© OpenStreetMap, © CARTO')],
+        ),
+      ],
+    );
+  }
+
+  // -- top bar ------------------------------------------------------------
+  Widget _iconPill(IconData icon, String tooltip, VoidCallback onTap) {
+    return Material(
+      color: _pillBg,
+      shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+      child: IconButton(
+        tooltip: tooltip,
+        icon: Icon(icon, size: 20, color: Colors.white70),
+        onPressed: onTap,
       ),
     );
   }
 
-  // OpenStreetMap panel: place pins + user position/bearing, follow toggle.
-  Widget _mapPanel() {
-    return SizedBox(
-      height: 220,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(8),
-        child: Stack(children: [
-          FlutterMap(
-            mapController: _map,
-            options: MapOptions(
-              initialCenter: _here,
-              initialZoom: 16,
-              onMapReady: () => _mapReady = true,
-              // User dragged/zoomed the map -> switch to free-browse.
-              onPositionChanged: (camera, hasGesture) {
-                if (hasGesture && _follow) setState(() => _follow = false);
+  Widget _topBar(AppLocalizations l) {
+    return Row(children: [
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: _pillBg,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: const Text('🎧  AI Guide',
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+      ),
+      const Spacer(),
+      Material(
+        color: _pillBg,
+        shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+        child: PopupMenuButton<String>(
+          tooltip: l.language,
+          icon: const Icon(Icons.translate, size: 20, color: Colors.white70),
+          initialValue: _lang,
+          onSelected: _changeLanguage,
+          itemBuilder: (_) => [
+            for (final e in kLangs.entries)
+              PopupMenuItem(value: e.key, child: Text('${e.value.label}  ${e.key}')),
+          ],
+        ),
+      ),
+      const SizedBox(width: 8),
+      _iconPill(_voice ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+          _voice ? l.voiceOn : l.voiceOff, _toggleVoice),
+      const SizedBox(width: 8),
+      _iconPill(Icons.tune_rounded, l.settings, _openSettings),
+    ]);
+  }
+
+  // -- bottom card --------------------------------------------------------
+  Widget _bottomCard(AppLocalizations l) {
+    final hasNarration = _curText != null && _curText!.isNotEmpty;
+    final title = _curIsReply ? l.chipAnswering : _curTitle;
+    return Container(
+      decoration: BoxDecoration(
+        color: _cardBg,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: Colors.white12),
+        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 24, offset: Offset(0, 8))],
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          _statusPill(l),
+          const Spacer(),
+          IconButton(
+            tooltip: l.history,
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.history_rounded, size: 20, color: Colors.white54),
+            onPressed: _log.isEmpty ? null : _openHistory,
+          ),
+        ]),
+        const SizedBox(height: 6),
+        if (hasNarration) ...[
+          if (title != null && title.isNotEmpty)
+            Text(title, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+          if (title != null && title.isNotEmpty) const SizedBox(height: 6),
+          ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.26),
+            child: SingleChildScrollView(
+              child: Text(_curText!, style: const TextStyle(fontSize: 15, height: 1.45, color: Colors.white70)),
+            ),
+          ),
+        ] else
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            child: Text(l.emptyHint,
+                style: const TextStyle(fontSize: 15, height: 1.4, color: Colors.white54)),
+          ),
+        const SizedBox(height: 14),
+        Row(children: [
+          Expanded(
+            child: FilledButton.icon(
+              onPressed: _primary,
+              style: FilledButton.styleFrom(
+                backgroundColor: _active ? const Color(0xFF3A2230) : _accent,
+                foregroundColor: _active ? const Color(0xFFFCA5A5) : Colors.black,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+              icon: Icon(_active ? Icons.stop_rounded : Icons.play_arrow_rounded),
+              label: Text(_active ? l.stop.replaceAll('⏸ ', '') : l.startWalk.replaceAll('▶ ', ''),
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+            ),
+          ),
+          const SizedBox(width: 10),
+          _roundAction(
+            icon: _recording ? Icons.stop_rounded : Icons.mic_rounded,
+            tooltip: _recording ? l.micStop : l.micAsk,
+            color: _recording ? const Color(0xFFEF4444) : _pillBg,
+            fg: _recording ? Colors.white : Colors.white70,
+            onTap: _connected ? _toggleMic : null,
+          ),
+          const SizedBox(width: 10),
+          _roundAction(
+            icon: Icons.keyboard_rounded,
+            tooltip: l.ask,
+            color: _pillBg,
+            fg: Colors.white70,
+            onTap: _connected ? _openAsk : null,
+          ),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _roundAction({
+    required IconData icon,
+    required String tooltip,
+    required Color color,
+    required Color fg,
+    VoidCallback? onTap,
+  }) {
+    return Opacity(
+      opacity: onTap == null ? 0.4 : 1,
+      child: Material(
+        color: color,
+        shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+        child: IconButton(
+          tooltip: tooltip,
+          padding: const EdgeInsets.all(14),
+          icon: Icon(icon, color: fg),
+          onPressed: onTap,
+        ),
+      ),
+    );
+  }
+
+  // -- follow FAB ---------------------------------------------------------
+  Widget _followFab(AppLocalizations l) {
+    return FloatingActionButton.small(
+      heroTag: 'follow',
+      tooltip: _follow ? l.following : l.freeBrowse,
+      backgroundColor: _follow ? _accent : _pillBg,
+      foregroundColor: _follow ? Colors.black : Colors.white70,
+      shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+      onPressed: () {
+        setState(() => _follow = true);
+        if (_mapReady) _map.move(_here, _map.camera.zoom);
+      },
+      child: Icon(_follow ? Icons.my_location_rounded : Icons.location_searching_rounded),
+    );
+  }
+
+  // -- sheets -------------------------------------------------------------
+  void _openAsk() {
+    final l = AppLocalizations.of(context)!;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF15161A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.fromLTRB(16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16),
+        child: Row(children: [
+          Expanded(
+            child: TextField(
+              controller: _askCtrl,
+              autofocus: true,
+              decoration: InputDecoration(
+                hintText: l.askHint,
+                filled: true,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+              ),
+              onSubmitted: (_) {
+                _ask();
+                Navigator.pop(ctx);
               },
             ),
-            children: [
-              TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                userAgentPackageName: 'com.example.ai_audio_guide',
-              ),
-              MarkerLayer(markers: [
-                // narrated places (current one highlighted)
-                for (final p in _places)
-                  Marker(
-                    point: p.point,
-                    width: 30,
-                    height: 30,
-                    child: Icon(
-                      Icons.location_on,
-                      size: p.id == _currentPlaceId ? 30 : 24,
-                      color: p.id == _currentPlaceId ? Colors.redAccent : Colors.blueGrey,
-                    ),
-                  ),
-                // the user, on top
-                Marker(
-                  point: _here,
-                  width: 44,
-                  height: 44,
-                  child: Transform.rotate(
-                    angle: _heading * pi / 180,
-                    child: const Icon(Icons.navigation, color: Colors.indigo, size: 36),
-                  ),
-                ),
-              ]),
-              const RichAttributionWidget(
-                attributions: [TextSourceAttribution('© OpenStreetMap')],
-              ),
-            ],
           ),
-          // follow / free-browse toggle
-          Positioned(
-            right: 8,
-            bottom: 8,
-            child: FloatingActionButton.small(
-              heroTag: 'follow',
-              tooltip: _follow
-                  ? AppLocalizations.of(context)!.following
-                  : AppLocalizations.of(context)!.freeBrowse,
-              backgroundColor: _follow ? Colors.indigo : Colors.white,
-              foregroundColor: _follow ? Colors.white : Colors.black54,
-              onPressed: () {
-                setState(() => _follow = true);
-                if (_mapReady) _map.move(_here, _map.camera.zoom);
-              },
-              child: Icon(_follow ? Icons.my_location : Icons.location_searching),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: () {
+              _ask();
+              Navigator.pop(ctx);
+            },
+            child: Text(l.ask),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  void _openHistory() {
+    final l = AppLocalizations.of(context)!;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF15161A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        maxChildSize: 0.92,
+        builder: (c, controller) => Column(children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+            child: Row(children: [
+              Text(l.history, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: () {
+                  setState(_log.clear);
+                  Navigator.pop(ctx);
+                },
+                icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                label: Text(l.clearFeed),
+              ),
+            ]),
+          ),
+          Expanded(
+            child: ListView.builder(
+              controller: controller,
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+              itemCount: _log.length,
+              itemBuilder: (_, i) => _logTile(_log[i]),
             ),
           ),
         ]),
@@ -593,160 +843,155 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context)!;
-    final walking = _walkTimer != null || _gpsSub != null;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('🎧 AI Audio Guide'),
-        actions: [
-          Center(child: _statusChip()),
-          PopupMenuButton<String>(
-            tooltip: l.language,
-            icon: const Icon(Icons.language),
-            initialValue: _lang,
-            onSelected: _changeLanguage,
-            itemBuilder: (_) => [
-              for (final e in kLangs.entries)
-                PopupMenuItem(value: e.key, child: Text('${e.value.label} (${e.key})')),
-            ],
-          ),
-          IconButton(
-            tooltip: _log.isEmpty ? l.feedEmpty : l.clearFeed,
-            icon: const Icon(Icons.delete_sweep_outlined),
-            onPressed: _log.isEmpty ? null : () => setState(_log.clear),
-          ),
-          IconButton(
-            tooltip: _voice ? l.voiceOn : l.voiceOff,
-            icon: Icon(_voice ? Icons.volume_up : Icons.volume_off),
-            onPressed: _toggleVoice,
-          ),
-        ],
+  Widget _logTile(Msg m) {
+    final (bg, fg) = switch (m.kind) {
+      'guide' => (_accent.withValues(alpha: 0.12), Colors.white),
+      'reply' => (const Color(0x2234D399), Colors.white),
+      'you' => (Colors.white10, Colors.white70),
+      _ => (Colors.white10, Colors.white38),
+    };
+    final align = m.kind == 'you' ? Alignment.centerRight : Alignment.centerLeft;
+    return Align(
+      alignment: align,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.all(11),
+        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.82),
+        decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14)),
+        child: Text(m.text, style: TextStyle(color: fg, fontSize: 14, height: 1.35)),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          children: [
-            Row(children: [
-              Expanded(
-                child: TextField(
-                  controller: _urlCtrl,
-                  decoration: InputDecoration(labelText: l.wsUrl, isDense: true),
-                ),
-              ),
-              const SizedBox(width: 8),
-              FilledButton(
-                onPressed: _wantConnected ? _disconnect : _connect,
-                child: Text(_wantConnected ? l.disconnect : l.connect),
-              ),
-            ]),
-            const SizedBox(height: 8),
-            Row(children: [
-              FilledButton.tonal(
-                onPressed: _connected && !walking ? _start : null,
-                child: Text(_useRealGps ? l.startGps : l.startWalk),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.tonal(
-                onPressed: walking ? _stopWalk : null,
-                child: Text(l.stop),
-              ),
-              const Spacer(),
-              Text(l.gps, style: const TextStyle(fontSize: 13)),
-              Switch(
-                value: _useRealGps,
-                // Can't switch source mid-walk.
-                onChanged: walking
-                    ? null
-                    : (v) => setState(() => _useRealGps = v),
-              ),
-            ]),
-            const SizedBox(height: 8),
-            _mapPanel(),
-            const SizedBox(height: 8),
-            Expanded(
-              child: Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.black12),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: _log.isEmpty
-                    ? Center(
-                        child: Text(
-                          l.emptyHint,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.black38),
-                        ),
-                      )
-                    : ListView.builder(
-                        controller: _scroll,
-                        itemCount: _log.length,
-                        itemBuilder: (_, i) {
-                          final m = _log[i];
-                          return Container(
-                            margin: const EdgeInsets.symmetric(vertical: 3),
-                            padding: const EdgeInsets.all(8),
-                            decoration: BoxDecoration(
-                              color: _bg(m.kind),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Text(m.text),
-                          );
-                        },
-                      ),
+    );
+  }
+
+  void _openSettings() {
+    final l = AppLocalizations.of(context)!;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF15161A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => StatefulBuilder(
+        builder: (c, setSheet) => Padding(
+          padding: EdgeInsets.fromLTRB(16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 24),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(l.settings, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _urlCtrl,
+              enabled: !_active,
+              decoration: InputDecoration(
+                labelText: l.wsUrl,
+                filled: true,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
               ),
             ),
-            // Footer: live position + current place id.
-            if (_lastPos != null || _lastPlace != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Row(children: [
-                  const Icon(Icons.place, size: 14, color: Colors.black45),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      [
-                        if (_lastPos != null) _lastPos,
-                        if (_lastPlace != null) '· $_lastPlace',
-                      ].join(' '),
-                      style: const TextStyle(fontSize: 12, color: Colors.black45),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ]),
-              ),
-            const SizedBox(height: 8),
-            Row(children: [
-              // Push to talk: tap to record, tap again to send.
-              IconButton.filledTonal(
-                tooltip: _recording ? l.micStop : l.micAsk,
-                isSelected: _recording,
-                style: _recording
-                    ? IconButton.styleFrom(backgroundColor: Colors.red.shade100)
-                    : null,
-                icon: Icon(_recording ? Icons.stop : Icons.mic,
-                    color: _recording ? Colors.red : null),
-                onPressed: _connected ? _toggleMic : null,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: _askCtrl,
-                  decoration: InputDecoration(
-                    hintText: l.askHint,
-                    isDense: true,
-                  ),
-                  onSubmitted: (_) => _ask(),
-                ),
-              ),
-              const SizedBox(width: 8),
-              FilledButton(onPressed: _connected ? _ask : null, child: Text(l.ask)),
-            ]),
-          ],
+            const SizedBox(height: 6),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(l.simulatedWalk),
+              value: _simulate,
+              // Can't switch source mid-walk.
+              onChanged: _active ? null : (v) {
+                setState(() => _simulate = v);
+                setSheet(() {});
+              },
+            ),
+          ]),
         ),
       ),
     );
   }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context)!;
+    return Scaffold(
+      body: Stack(children: [
+        Positioned.fill(child: _mapView()),
+        // top controls
+        Positioned(
+          top: 0,
+          left: 12,
+          right: 12,
+          child: SafeArea(bottom: false, child: Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: _topBar(l),
+          )),
+        ),
+        // follow FAB, sitting just above the card
+        Positioned(right: 16, bottom: 0, child: SafeArea(
+          child: Padding(
+            padding: EdgeInsets.only(bottom: _cardHeightEstimate() + 12),
+            child: _followFab(l),
+          ),
+        )),
+        // bottom card
+        Positioned(left: 12, right: 12, bottom: 0, child: SafeArea(
+          top: false,
+          child: Padding(padding: const EdgeInsets.only(bottom: 8), child: _bottomCard(l)),
+        )),
+      ]),
+    );
+  }
+
+  // Rough reserved height so the follow FAB floats above the card.
+  double _cardHeightEstimate() =>
+      (_curText != null && _curText!.isNotEmpty) ? 230 : 150;
+}
+
+// A small dot that gently pulses while the agent is active.
+class _PulsingDot extends StatefulWidget {
+  const _PulsingDot({required this.color, required this.active});
+  final Color color;
+  final bool active;
+
+  @override
+  State<_PulsingDot> createState() => _PulsingDotState();
+}
+
+class _PulsingDotState extends State<_PulsingDot> with SingleTickerProviderStateMixin {
+  late final AnimationController _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
+    if (widget.active) _c.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(_PulsingDot old) {
+    super.didUpdateWidget(old);
+    if (widget.active && !_c.isAnimating) {
+      _c.repeat(reverse: true);
+    } else if (!widget.active && _c.isAnimating) {
+      _c.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.active) return _dot(1);
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (_, __) => _dot(0.4 + 0.6 * _c.value),
+    );
+  }
+
+  Widget _dot(double opacity) => Container(
+        width: 9,
+        height: 9,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: widget.color.withValues(alpha: opacity),
+          boxShadow: [BoxShadow(color: widget.color.withValues(alpha: opacity * 0.6), blurRadius: 6)],
+        ),
+      );
 }

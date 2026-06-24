@@ -57,6 +57,15 @@ class AppLocalizationsRu extends AppLocalizations {
   String get language => 'Язык';
 
   @override
+  String get settings => 'Настройки';
+
+  @override
+  String get history => 'История';
+
+  @override
+  String get simulatedWalk => 'Симуляция прогулки (демо)';
+
+  @override
   String get emptyHint =>
       'Подключитесь и нажмите «Прогулка».\nГид расскажет про места вокруг.';
 

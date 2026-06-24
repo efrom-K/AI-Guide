@@ -57,6 +57,15 @@ class AppLocalizationsEs extends AppLocalizations {
   String get language => 'Idioma';
 
   @override
+  String get settings => 'Ajustes';
+
+  @override
+  String get history => 'Historial';
+
+  @override
+  String get simulatedWalk => 'Paseo simulado (demo)';
+
+  @override
   String get emptyHint =>
       'Conéctate y pulsa «Paseo».\nEl guía te hablará de los lugares a tu alrededor.';
 

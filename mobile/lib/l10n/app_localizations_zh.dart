@@ -57,6 +57,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get language => '语言';
 
   @override
+  String get settings => '设置';
+
+  @override
+  String get history => '历史';
+
+  @override
+  String get simulatedWalk => '模拟漫步（演示）';
+
+  @override
   String get emptyHint => '连接后点击“漫步”。\n导游会为你讲解周围的地点。';
 
   @override

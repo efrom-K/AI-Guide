@@ -57,6 +57,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get language => 'Language';
 
   @override
+  String get settings => 'Settings';
+
+  @override
+  String get history => 'History';
+
+  @override
+  String get simulatedWalk => 'Simulated walk (demo)';
+
+  @override
   String get emptyHint =>
       'Connect and tap “Walk”.\nThe guide will tell you about places around you.';
 

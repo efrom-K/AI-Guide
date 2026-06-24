@@ -206,6 +206,24 @@ abstract class AppLocalizations {
   /// **'Language'**
   String get language;
 
+  /// No description provided for @settings.
+  ///
+  /// In en, this message translates to:
+  /// **'Settings'**
+  String get settings;
+
+  /// No description provided for @history.
+  ///
+  /// In en, this message translates to:
+  /// **'History'**
+  String get history;
+
+  /// No description provided for @simulatedWalk.
+  ///
+  /// In en, this message translates to:
+  /// **'Simulated walk (demo)'**
+  String get simulatedWalk;
+
   /// No description provided for @emptyHint.
   ///
   /// In en, this message translates to:

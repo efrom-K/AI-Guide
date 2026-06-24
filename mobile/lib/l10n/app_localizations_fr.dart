@@ -57,6 +57,15 @@ class AppLocalizationsFr extends AppLocalizations {
   String get language => 'Langue';
 
   @override
+  String get settings => 'Réglages';
+
+  @override
+  String get history => 'Historique';
+
+  @override
+  String get simulatedWalk => 'Balade simulée (démo)';
+
+  @override
   String get emptyHint =>
       'Connectez-vous et appuyez sur « Balade ».\nLe guide vous parlera des lieux autour de vous.';
 
