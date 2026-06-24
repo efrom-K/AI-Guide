@@ -48,12 +48,16 @@ class TextPipeline:
         enricher: Enricher,
         cache: EnrichmentCache | None = None,
         language: str = "ru",
+        enrich_top_k: int | None = None,
+        enrich_timeout_s: float | None = None,
     ) -> None:
         self.scorer = scorer
         self.narrator = narrator
         self.enricher = enricher
         self.cache = cache or EnrichmentCache()
         self.language = language
+        self.enrich_top_k = enrich_top_k
+        self.enrich_timeout_s = enrich_timeout_s
 
     async def step(
         self,
@@ -69,7 +73,16 @@ class TextPipeline:
         language: str | None = None,
     ) -> StepResult:
         lang = language or self.language
-        await prefetch(candidates, self.enricher, self.cache)
+        addr = address or Address()
+        ctx = ", ".join(p for p in (addr.city, addr.country) if p) or None
+        await prefetch(
+            candidates,
+            self.enricher,
+            self.cache,
+            top_k=self.enrich_top_k,
+            timeout_s=self.enrich_timeout_s,
+            context=ctx,
+        )
         enriched = attach_facts(candidates, self.cache)
 
         decision = await self.scorer.score(

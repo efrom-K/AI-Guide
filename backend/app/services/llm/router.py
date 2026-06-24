@@ -16,6 +16,7 @@ class Role(StrEnum):
     NARRATOR = "narrator"
     COMPANION = "companion"
     LANDMARK = "landmark"  # high-end narrator for LANDMARK-significance places
+    ENRICHER = "enricher"  # web-search fact gathering (off the hot-path)
 
 
 def model_for(role: Role) -> str:
@@ -24,4 +25,5 @@ def model_for(role: Role) -> str:
         Role.NARRATOR: settings.model_narrator,
         Role.COMPANION: settings.model_companion,
         Role.LANDMARK: settings.model_landmark,
+        Role.ENRICHER: settings.model_enricher,
     }[role]

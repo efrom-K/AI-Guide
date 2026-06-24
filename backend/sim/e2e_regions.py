@@ -37,7 +37,7 @@ from app.services.agent.narrator import LLMNarrator
 from app.services.agent.orchestrator import Orchestrator
 from app.services.agent.pipeline import TextPipeline
 from app.services.agent.scorer import LLMScorer
-from app.services.enrichment.enricher import MockEnricher
+from app.services.enrichment.enricher import MockEnricher, WebSearchEnricher
 from app.services.geo.discovery import Discovery
 from app.services.geo.providers import OverpassProvider
 from app.services.llm.client import METER, OpenAICompatLLM
@@ -119,11 +119,19 @@ async def run_scenario(orch: Orchestrator, sc) -> dict:
 
 async def main() -> None:
     llm = OpenAICompatLLM()
-    enricher = MockEnricher.from_json(_FIX / "facts_red_square.json")
-    pipeline = TextPipeline(LLMScorer(llm), LLMNarrator(llm), enricher)
+    web = settings.enrichment_source == "websearch"
+    if web:
+        enricher = WebSearchEnricher(llm, max_results=settings.web_search_max_results,
+                                     max_tokens=settings.web_search_max_tokens,
+                                     cache_path=settings.enrich_cache_path)
+    else:
+        enricher = MockEnricher.from_json(_FIX / "facts_red_square.json")
+    pipeline = TextPipeline(LLMScorer(llm), LLMNarrator(llm), enricher,
+                            enrich_top_k=settings.enrich_top_k if web else None,
+                            enrich_timeout_s=settings.enrich_timeout_s if web else None)
     orch = Orchestrator(Discovery(OverpassProvider(url=OVERPASS_URL)), pipeline,
                         LLMCompanion(llm), InMemoryStateStore())
-    print(f"Overpass: {OVERPASS_URL}", flush=True)
+    print(f"Overpass: {OVERPASS_URL} · enrichment: {settings.enrichment_source}", flush=True)
 
     results = []
     for sc in SCENARIOS:

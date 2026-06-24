@@ -20,3 +20,6 @@ mobile/pubspec.lock
 .DS_Store
 Thumbs.db
 .idea/
+
+# Local fact-enrichment cache
+backend/.enrich_cache.json

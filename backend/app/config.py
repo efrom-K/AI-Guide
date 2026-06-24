@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     model_narrator: str = "claude-sonnet-4-6"
     model_companion: str = "claude-sonnet-4-6"
     model_landmark: str = "claude-opus-4-8"
+    model_enricher: str = "claude-haiku-4-5"
 
     # OpenAI-compatible provider (LM Studio / OpenRouter / etc.)
     #   LM Studio:  OPENAI_BASE_URL=http://localhost:1234/v1  OPENAI_API_KEY=lm-studio
@@ -29,6 +30,7 @@ class Settings(BaseSettings):
     openai_model_narrator: str = ""
     openai_model_companion: str = ""
     openai_model_landmark: str = ""
+    openai_model_enricher: str = ""
     # Provider "thinking"/reasoning effort (OpenRouter). Gemini 3.x requires
     # reasoning (cannot be disabled); "low" minimises the expensive output tokens
     # it spends. "" => don't send the param (e.g. LM Studio, which would reject it).
@@ -55,7 +57,16 @@ class Settings(BaseSettings):
     # Wiring (which implementations the orchestrator factory builds)
     agent_backend: str = "heuristic"  # heuristic | openai | anthropic
     geo_source: str = "fixture"  # fixture | overpass
-    enrichment_source: str = "mock"  # mock | (websearch later)
+    enrichment_source: str = "mock"  # mock | websearch
+
+    # WebSearch enrichment (real facts via the OpenRouter "web" plugin). Kept off
+    # the hot-path: only the top-K nearest candidates are enriched per tick, with a
+    # timeout, and results are cached (in-memory + optional JSON file).
+    web_search_max_results: int = 3  # web results per place (OpenRouter bills per result)
+    web_search_max_tokens: int = 400
+    enrich_top_k: int = 3  # how many top-ranked candidates to enrich per tick
+    enrich_timeout_s: float = 6.0  # budget for a tick's enrichment; partial on timeout
+    enrich_cache_path: str = ""  # "" => memory only; a path persists facts across runs
 
     # STT (voice barge-in)
     stt_backend: str = "mock"  # mock | faster_whisper

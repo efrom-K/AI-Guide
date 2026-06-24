@@ -12,7 +12,7 @@ from app.services.agent.narrator import LLMNarrator, Narrator, TemplateNarrator
 from app.services.agent.orchestrator import Orchestrator
 from app.services.agent.pipeline import TextPipeline
 from app.services.agent.scorer import HeuristicScorer, LLMScorer, Scorer
-from app.services.enrichment.enricher import Enricher, MockEnricher
+from app.services.enrichment.enricher import Enricher, MockEnricher, WebSearchEnricher
 from app.services.geo.discovery import Discovery
 from app.services.geo.providers import OverpassProvider, StaticPlaceProvider
 from app.services.state.store import StateStore, default_store
@@ -43,11 +43,29 @@ def _discovery() -> Discovery:
 
 
 def _enricher() -> Enricher:
-    # only "mock" wired for now; websearch enricher lands with the real provider
+    if settings.enrichment_source == "websearch":
+        from app.services.llm.client import OpenAICompatLLM
+
+        return WebSearchEnricher(
+            OpenAICompatLLM(),
+            max_results=settings.web_search_max_results,
+            max_tokens=settings.web_search_max_tokens,
+            cache_path=settings.enrich_cache_path,
+        )
     return MockEnricher.from_json(_FIX / "facts_red_square.json")
 
 
 def build_orchestrator(store: StateStore | None = None) -> Orchestrator:
     scorer, narrator, companion = _roles()
-    pipeline = TextPipeline(scorer, narrator, _enricher(), language=settings.default_language)
+    web = settings.enrichment_source == "websearch"
+    pipeline = TextPipeline(
+        scorer,
+        narrator,
+        _enricher(),
+        language=settings.default_language,
+        # bound enrichment only for the real (slow/paid) provider; the mock path
+        # enriches every candidate inline (instant).
+        enrich_top_k=settings.enrich_top_k if web else None,
+        enrich_timeout_s=settings.enrich_timeout_s if web else None,
+    )
     return Orchestrator(_discovery(), pipeline, companion, store or default_store())

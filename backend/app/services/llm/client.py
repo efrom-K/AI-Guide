@@ -205,7 +205,8 @@ class OpenAICompatLLM:
             Role.NARRATOR: settings.openai_model_narrator,
             Role.LANDMARK: settings.openai_model_landmark,
             Role.COMPANION: settings.openai_model_companion,
-        }[role]
+            Role.ENRICHER: settings.openai_model_enricher,
+        }.get(role, "")
         model = override or self._default
         if not model:
             raise RuntimeError("No OpenAI-compatible model configured (set OPENAI_MODEL)")
@@ -215,9 +216,10 @@ class OpenAICompatLLM:
     # and Landmark) just write prose for an already-chosen place — the skip/silence
     # judgment lives in the Scorer + the deterministic short-circuits — so they need
     # little thinking. Leaving Landmark uncapped also let Gemini's planning scaffold
-    # ("3-6 sentences? Yes…") leak into the spoken text, so it is capped too. Scorer
-    # (significance/skip judgment) and Companion (answers) keep their reasoning.
-    _REASONING_CAP_ROLES = frozenset({Role.NARRATOR, Role.LANDMARK})
+    # ("3-6 sentences? Yes…") leak into the spoken text, so it is capped too. The
+    # Enricher just extracts facts from search results — capped so its planning does
+    # not pollute the facts. Scorer (significance) and Companion (answers) keep theirs.
+    _REASONING_CAP_ROLES = frozenset({Role.NARRATOR, Role.LANDMARK, Role.ENRICHER})
 
     def _reasoning_for(self, role: Role) -> dict[str, Any] | None:
         cap = settings.openai_reasoning_max_tokens
@@ -290,6 +292,24 @@ class OpenAICompatLLM:
             guard = f"{user}\n\nВерни строго валидный JSON по схеме, без markdown."
             text = await self._chat(role, system, guard, max_tokens, temperature=0)
             return _parse_json(text)
+
+    async def web_facts(
+        self, system: str, user: str, *, max_results: int = 3, max_tokens: int = 400
+    ) -> str:
+        """Web-grounded fact extraction via the OpenRouter "web" plugin.
+
+        The plugin injects live search results; the (Enricher-role) model distils
+        verifiable facts from them. Returns the model's text — the caller decides
+        what an empty/"no facts" answer means.
+        """
+        return await self._chat(
+            Role.ENRICHER,
+            system,
+            user,
+            max_tokens,
+            temperature=0.3,
+            plugins=[{"id": "web", "max_results": max_results}],
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()
