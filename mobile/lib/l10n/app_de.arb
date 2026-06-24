@@ -19,6 +19,7 @@
   "settings": "Einstellungen",
   "history": "Verlauf",
   "simulatedWalk": "Simulierter Spaziergang (Demo)",
+  "compassNorth": "Nach Norden ausrichten",
   "emptyHint": "Verbinde dich und tippe auf „Spaziergang“.\nDer Guide erzählt dir von Orten in deiner Nähe.",
   "following": "Folge dir",
   "freeBrowse": "Freie Ansicht – tippen zum Folgen",

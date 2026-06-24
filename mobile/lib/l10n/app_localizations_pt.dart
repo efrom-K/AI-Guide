@@ -66,6 +66,9 @@ class AppLocalizationsPt extends AppLocalizations {
   String get simulatedWalk => 'Passeio simulado (demo)';
 
   @override
+  String get compassNorth => 'Orientar ao norte';
+
+  @override
   String get emptyHint =>
       'Conecte-se e toque em «Passeio».\nO guia vai falar sobre os lugares ao seu redor.';
 

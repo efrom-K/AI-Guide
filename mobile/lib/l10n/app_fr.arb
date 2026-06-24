@@ -19,6 +19,7 @@
   "settings": "Réglages",
   "history": "Historique",
   "simulatedWalk": "Balade simulée (démo)",
+  "compassNorth": "Orienter au nord",
   "emptyHint": "Connectez-vous et appuyez sur « Balade ».\nLe guide vous parlera des lieux autour de vous.",
   "following": "Je vous suis",
   "freeBrowse": "Navigation libre — appuyez pour suivre",

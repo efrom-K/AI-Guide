@@ -114,13 +114,23 @@ class PlaceMark {
   PlaceMark(this.id, this.point, this.name, this.text);
 }
 
-// Red Square waypoints (lat, lon) — same route as the backend sim.
+// Demo route: a real ~3 km Moscow walk, м. Волгоградский проспект -> м. Павелецкая.
+// (lat, lon) waypoints; the sim interpolates between them at walking speed.
 const List<List<double>> kRoute = [
-  [55.7525, 37.6231],
-  [55.7537, 37.6205],
-  [55.7547, 37.6196],
-  [55.7553, 37.6178],
+  [55.72524, 37.68689], // м. Волгоградский проспект
+  [55.72560, 37.68000],
+  [55.72610, 37.67300],
+  [55.72680, 37.66600],
+  [55.72740, 37.65900],
+  [55.72800, 37.65200],
+  [55.72860, 37.64600],
+  [55.72930, 37.64100],
+  [55.73000, 37.63900],
+  [55.73050, 37.63784], // м. Павелецкая
 ];
+
+const double kWalkSpeedMps = 1.4; // human walking pace
+const double kStepM = 8; // metres between simulated GPS fixes (matches the real distanceFilter)
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.locale, required this.onLocaleChanged});
@@ -160,8 +170,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   // Map (CARTO dark tiles via flutter_map).
   final MapController _map = MapController();
   AnimationController? _camCtrl; // drives smooth recenter/follow camera moves
+  AnimationController? _rotCtrl; // drives the "orient north" animation
   bool _mapReady = false;
   bool _follow = true; // auto-centre on the user vs free pan
+  double _mapRotation = 0; // current map bearing (deg); 0 = north up
   LatLng _here = const LatLng(55.7525, 37.6231); // Red Square until first fix
   double _heading = 0; // degrees, for the bearing arrow
   final List<PlaceMark> _places = []; // narrated places pinned on the map
@@ -368,7 +380,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   List<Map<String, double>> _buildPoints() {
-    const stepM = 10.0;
+    const stepM = kStepM;
     final pts = <Map<String, double>>[];
     for (var i = 0; i < kRoute.length - 1; i++) {
       final a = kRoute[i], b = kRoute[i + 1];
@@ -390,7 +402,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _points = _buildPoints();
     _idx = 0;
     _walkTimer?.cancel();
-    _walkTimer = Timer.periodic(const Duration(milliseconds: 1200), (_) {
+    // Fire one fix every kStepM metres at human pace (kStepM / speed seconds).
+    final ms = (kStepM / kWalkSpeedMps * 1000).round();
+    _walkTimer = Timer.periodic(Duration(milliseconds: ms), (_) {
       if (_idx >= _points.length) {
         _stopWalk();
         return;
@@ -527,6 +541,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _ch?.sink.close();
     _scroll.dispose();
     _camCtrl?.dispose();
+    _rotCtrl?.dispose();
     _map.dispose();
     super.dispose();
   }
@@ -630,6 +645,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         onMapReady: () => _mapReady = true,
         onPositionChanged: (camera, hasGesture) {
           if (hasGesture && _follow) setState(() => _follow = false);
+          if (camera.rotation != _mapRotation) {
+            setState(() => _mapRotation = camera.rotation);
+          }
         },
       ),
       children: [
@@ -818,6 +836,35 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  // Smoothly rotate the map back to north (shortest way round).
+  void _resetNorth() {
+    if (!_mapReady) return;
+    _rotCtrl?.dispose();
+    final start = _map.camera.rotation;
+    final delta = (-start + 540) % 360 - 180; // normalise to [-180, 180]
+    final ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
+    _rotCtrl = ctrl;
+    final curve = CurvedAnimation(parent: ctrl, curve: Curves.easeInOut);
+    curve.addListener(() => _map.rotate(start + delta * curve.value));
+    ctrl.forward();
+  }
+
+  // Compass button: the needle reflects the map bearing; tap orients to north.
+  Widget _compassFab(AppLocalizations l) {
+    return FloatingActionButton.small(
+      heroTag: 'compass',
+      tooltip: l.compassNorth,
+      backgroundColor: _pillBg,
+      foregroundColor: Colors.white70,
+      shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+      onPressed: _resetNorth,
+      child: Transform.rotate(
+        angle: -_mapRotation * pi / 180,
+        child: const Icon(Icons.navigation_rounded, color: Color(0xFFEF4444), size: 20),
+      ),
+    );
+  }
+
   // -- follow FAB ---------------------------------------------------------
   Widget _followFab(AppLocalizations l) {
     return FloatingActionButton.small(
@@ -999,7 +1046,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               Align(
                 alignment: Alignment.centerRight,
-                child: Padding(padding: const EdgeInsets.only(bottom: 10), child: _followFab(l)),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    if (_mapRotation.abs() > 0.5) ...[
+                      _compassFab(l),
+                      const SizedBox(height: 10),
+                    ],
+                    _followFab(l),
+                  ]),
+                ),
               ),
               _bottomCard(l),
             ]),

@@ -224,6 +224,12 @@ abstract class AppLocalizations {
   /// **'Simulated walk (demo)'**
   String get simulatedWalk;
 
+  /// No description provided for @compassNorth.
+  ///
+  /// In en, this message translates to:
+  /// **'Orient north'**
+  String get compassNorth;
+
   /// No description provided for @emptyHint.
   ///
   /// In en, this message translates to:

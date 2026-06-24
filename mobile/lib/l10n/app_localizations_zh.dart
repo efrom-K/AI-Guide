@@ -66,6 +66,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get simulatedWalk => '模拟漫步（演示）';
 
   @override
+  String get compassNorth => '朝向正北';
+
+  @override
   String get emptyHint => '连接后点击“漫步”。\n导游会为你讲解周围的地点。';
 
   @override

@@ -19,6 +19,7 @@
   "settings": "Settings",
   "history": "History",
   "simulatedWalk": "Simulated walk (demo)",
+  "compassNorth": "Orient north",
   "emptyHint": "Connect and tap “Walk”.\nThe guide will tell you about places around you.",
   "following": "Following you",
   "freeBrowse": "Free browse — tap to follow",

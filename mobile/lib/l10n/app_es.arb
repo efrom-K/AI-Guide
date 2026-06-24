@@ -19,6 +19,7 @@
   "settings": "Ajustes",
   "history": "Historial",
   "simulatedWalk": "Paseo simulado (demo)",
+  "compassNorth": "Orientar al norte",
   "emptyHint": "Conéctate y pulsa «Paseo».\nEl guía te hablará de los lugares a tu alrededor.",
   "following": "Siguiéndote",
   "freeBrowse": "Exploración libre: toca para seguir",

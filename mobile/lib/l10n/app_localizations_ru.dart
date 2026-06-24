@@ -66,6 +66,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get simulatedWalk => 'Симуляция прогулки (демо)';
 
   @override
+  String get compassNorth => 'На север';
+
+  @override
   String get emptyHint =>
       'Подключитесь и нажмите «Прогулка».\nГид расскажет про места вокруг.';
 
