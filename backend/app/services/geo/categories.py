@@ -24,9 +24,32 @@ WEIGHT_BY_CATEGORY: dict[str, float] = {
     "theatre": 0.6,
     "arts_centre": 0.6,
     "cinema": 0.55,
-    # green
+    # green & nature
+    "nature_reserve": 0.7,
+    "peak": 0.7,
+    "waterfall": 0.75,
+    "volcano": 0.85,
+    "glacier": 0.8,
+    "reservoir": 0.65,
+    "water": 0.6,
+    "river": 0.55,
+    "spring": 0.6,
+    "beach": 0.6,
+    "bay": 0.6,
+    "cliff": 0.6,
+    "wetland": 0.5,
+    "forest": 0.45,
+    "wood": 0.45,
     "park": 0.5,
     "garden": 0.5,
+    # notable structures
+    "lighthouse": 0.8,
+    "tower": 0.6,
+    "bridge": 0.55,
+    "windmill": 0.6,
+    "watermill": 0.6,
+    "obelisk": 0.6,
+    "fountain": 0.45,
     # everyday / commercial
     "cafe": 0.3,
     "restaurant": 0.3,
@@ -50,6 +73,11 @@ KEEP_TAGS = frozenset(
         "historic",
         "amenity",
         "leisure",
+        "natural",
+        "water",
+        "waterway",
+        "landuse",
+        "man_made",
         "shop",
         "building",
         "religion",
@@ -103,8 +131,31 @@ def _category(t: dict[str, str]) -> str:
         return amenity
 
     leisure = t.get("leisure")
-    if leisure in {"park", "garden"}:
+    if leisure in {"park", "garden", "nature_reserve"}:
         return leisure
+
+    # nature & water
+    if t.get("landuse") == "reservoir" or t.get("water") == "reservoir":
+        return "reservoir"
+    natural = t.get("natural")
+    if natural in {
+        "water", "wood", "peak", "bay", "beach", "cape", "cliff",
+        "spring", "waterfall", "volcano", "glacier", "wetland",
+    }:
+        return natural
+    if "water" in t:
+        return "water"
+    waterway = t.get("waterway")
+    if waterway in {"river", "canal", "waterfall", "dam"}:
+        return "waterfall" if waterway == "waterfall" else "river"
+    if t.get("landuse") == "forest":
+        return "forest"
+
+    man_made = t.get("man_made")
+    if man_made in {"bridge", "tower", "lighthouse", "watermill", "windmill", "obelisk"}:
+        return man_made
+    if t.get("amenity") == "fountain":
+        return "fountain"
 
     if "shop" in t:
         return "shop"

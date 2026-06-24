@@ -919,25 +919,23 @@ class _HomePageState extends State<HomePage> {
             child: _topBar(l),
           )),
         ),
-        // follow FAB, sitting just above the card
-        Positioned(right: 16, bottom: 0, child: SafeArea(
-          child: Padding(
-            padding: EdgeInsets.only(bottom: _cardHeightEstimate() + 12),
-            child: _followFab(l),
-          ),
-        )),
-        // bottom card
+        // recenter FAB sits directly above the card (always visible).
         Positioned(left: 12, right: 12, bottom: 0, child: SafeArea(
           top: false,
-          child: Padding(padding: const EdgeInsets.only(bottom: 8), child: _bottomCard(l)),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Align(
+                alignment: Alignment.centerRight,
+                child: Padding(padding: const EdgeInsets.only(bottom: 10), child: _followFab(l)),
+              ),
+              _bottomCard(l),
+            ]),
+          ),
         )),
       ]),
     );
   }
-
-  // Rough reserved height so the follow FAB floats above the card.
-  double _cardHeightEstimate() =>
-      (_curText != null && _curText!.isNotEmpty) ? 230 : 150;
 }
 
 // A small dot that gently pulses while the agent is active.

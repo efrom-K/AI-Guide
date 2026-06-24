@@ -30,8 +30,15 @@ _SELECTORS = (
     '"tourism"',
     '"historic"',
     '"amenity"="place_of_worship"',
-    '"amenity"~"theatre|cinema|arts_centre"',
-    '"leisure"~"park|garden"',
+    '"amenity"~"theatre|cinema|arts_centre|fountain"',
+    '"leisure"~"park|garden|nature_reserve"',
+    # nature & water — so the guide notices reservoirs, rivers, lakes, forests, hills
+    '"natural"~"water|wood|peak|bay|beach|cape|cliff|spring|waterfall|volcano|glacier|wetland"',
+    '"water"',
+    '"waterway"~"river|canal|waterfall|dam"',
+    '"landuse"~"reservoir|forest"',
+    # notable man-made structures
+    '"man_made"~"bridge|tower|lighthouse|watermill|windmill|pier|obelisk"',
 )
 
 

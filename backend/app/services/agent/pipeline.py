@@ -18,6 +18,7 @@ from app.shared.schemas import (
     Address,
     Candidate,
     ControlPatch,
+    GazeConfidence,
     Heading,
     NarratorFlags,
     NarratorInput,
@@ -120,3 +121,45 @@ class TextPipeline:
             )
         )
         return StepResult(text, decision, chosen.place, sig)
+
+    async def elaborate(
+        self,
+        place: Place,
+        significance: Significance,
+        *,
+        history: list[str],
+        address: Address | None = None,
+        heading: Heading | None = None,
+        pace: Pace = Pace.SLOW,
+        language: str | None = None,
+    ) -> str:
+        """Tell MORE about an already-covered place (nothing new nearby). Reuses
+        cached facts; the narrator adds a fresh detail, avoiding HISTORY."""
+        lang = language or self.language
+        facts = self.cache.get(place.id)
+        if facts is None:
+            addr = address or Address()
+            ctx = ", ".join(p for p in (addr.city, addr.country) if p) or None
+            await prefetch(
+                [Candidate(place=place, distance_m=0.0, type_weight=0.0,
+                           in_gaze_cone=False, gaze_confidence=GazeConfidence.LOW)],
+                self.enricher,
+                self.cache,
+                top_k=1,
+                timeout_s=self.enrich_timeout_s,
+                context=ctx,
+            )
+            facts = self.cache.get(place.id)
+        return await self.narrator.narrate(
+            NarratorInput(
+                place=place,
+                significance=significance,
+                facts=facts,
+                distance_m=0.0,
+                heading=heading or Heading(),
+                pace=pace,
+                history=history,
+                flags=NarratorFlags(elaborate=True),
+                language=lang,
+            )
+        )

@@ -30,10 +30,12 @@ from app.shared.schemas import (
     GeoPoint,
     Heading,
     Pace,
+    Significance,
 )
 
 _HISTORY_CAP = 12
 _CONVO_CAP = 20
+_MAX_ELABORATE = 2  # follow-ups per place when nothing new is nearby
 
 
 class State(StrEnum):
@@ -108,14 +110,20 @@ class Orchestrator:
 
         st.current_radius_m = result.radius_m
 
-        # heuristic gate: unchanged candidate set + no expansion -> skip the LLM.
-        fp = fingerprint(result.candidates)
-        if fp == st.last_candidate_fingerprint and not result.expanded:
-            return await self._finish(st, State.IDLE, "silence")
-        st.last_candidate_fingerprint = fp
-
         if st.control_patch.mute:
             return await self._finish(st, State.IDLE, "silence")
+
+        # heuristic gate: unchanged candidate set + no expansion -> skip the Scorer.
+        # Nothing new nearby: instead of silence, keep telling MORE about the last
+        # place (bounded), so the user isn't left hanging in an empty area.
+        fp = fingerprint(result.candidates)
+        if fp == st.last_candidate_fingerprint and not result.expanded:
+            return await self._elaborate_or_silence(st, heading, pace)
+        st.last_candidate_fingerprint = fp
+
+        # nothing unseen nearby -> don't waste a Scorer call; elaborate or stay quiet.
+        if not result.candidates:
+            return await self._elaborate_or_silence(st, heading, pace, expanded=result.expanded)
 
         switching = bool(
             st.last_place_id
@@ -141,12 +149,43 @@ class Orchestrator:
             st.narration_history = (st.narration_history + [out.text])[-_HISTORY_CAP:]
             st.seen_place_ids.append(out.place.id)
             st.last_place_id = out.place.id
+            st.last_place = out.place
+            st.last_significance = out.significance
+            st.elaboration_count = 0  # fresh place — allow follow-ups again
             state = State.SWITCHING if switching else State.NARRATING
             return await self._finish(
                 st, state, "narration", out.text, out.place, out.significance
             )
 
-        state = State.EXPANDING if result.expanded else State.IDLE
+        return await self._elaborate_or_silence(st, heading, pace, expanded=result.expanded)
+
+    # When nothing new is nearby, tell more about the last place (capped) instead
+    # of going silent; fall back to silence once there's nothing left to add.
+    async def _elaborate_or_silence(
+        self, st, heading: Heading, pace: Pace, *, expanded: bool = False
+    ) -> OrchestratorOutput:
+        if st.last_place is not None and st.elaboration_count < _MAX_ELABORATE:
+            try:
+                text = await self.pipeline.elaborate(
+                    st.last_place,
+                    st.last_significance or Significance.MEDIUM,
+                    history=st.narration_history,
+                    address=st.address,
+                    heading=heading,
+                    pace=pace,
+                    language=st.language,
+                )
+            except Exception:
+                text = ""
+            if text:
+                st.elaboration_count += 1
+                st.narration_history = (st.narration_history + [text])[-_HISTORY_CAP:]
+                return await self._finish(
+                    st, State.NARRATING, "narration", text,
+                    st.last_place, st.last_significance,
+                )
+            st.elaboration_count = _MAX_ELABORATE  # nothing more to add — stop trying
+        state = State.EXPANDING if expanded else State.IDLE
         return await self._finish(st, state, "silence")
 
     # -- barge-in ----------------------------------------------------------- #

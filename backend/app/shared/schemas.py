@@ -120,6 +120,7 @@ class NarrationContext(BaseModel):
 class NarratorFlags(BaseModel):
     switching: bool = False
     nothing_new: bool = False
+    elaborate: bool = False  # tell MORE about an already-covered place (nothing new nearby)
     preferences: ControlPatch | None = None
 
 
@@ -169,6 +170,9 @@ class SessionState(BaseModel):
     control_patch: ControlPatch = Field(default_factory=ControlPatch)
     current_radius_m: float = 80.0
     last_place_id: str | None = None  # last narrated place (for switching detection)
+    last_place: Place | None = None  # full last place (to elaborate when nothing new)
+    last_significance: Significance | None = None
+    elaboration_count: int = 0  # follow-ups already told about last_place
     last_candidate_fingerprint: str | None = None  # heuristic gate
     state: str = "idle"  # FSM state name
 

@@ -147,3 +147,38 @@ def test_pipeline_walk_offline_no_repeats():
 def test_fake_llm_roles_callable():
     fake = FakeLLM(text_response="hi")
     assert asyncio.run(fake.complete_text(Role.NARRATOR, "s", "u")) == "hi"
+
+
+# -- elaborate (latch onto a place when nothing new is nearby) ----------------
+def test_elaborate_flag_bypasses_repeat_guard():
+    n = LLMNarrator(FakeLLM(text_response="кстати, ещё одна деталь"))
+    place = Place(id="p", name="Парк", category="park", location=GeoPoint(lat=1, lon=2))
+    inp = NarratorInput(
+        place=place, significance=Significance.MEDIUM, facts="факт", distance_m=0,
+        history=["Парк. уже рассказывал про него"],
+        flags=NarratorFlags(elaborate=True),
+    )
+    # name is in HISTORY, but elaborate=True must NOT silence it
+    assert asyncio.run(n.narrate(inp)) == "кстати, ещё одна деталь"
+
+
+def test_repeat_guard_silences_without_elaborate():
+    n = LLMNarrator(FakeLLM(text_response="повтор"))
+    place = Place(id="p", name="Парк", category="park", location=GeoPoint(lat=1, lon=2))
+    inp = NarratorInput(
+        place=place, significance=Significance.MEDIUM, facts="факт", distance_m=0,
+        history=["Парк. уже рассказывал"], flags=NarratorFlags(),
+    )
+    assert asyncio.run(n.narrate(inp)) == ""  # repeat guard fires
+
+
+def test_pipeline_elaborate_uses_cached_facts():
+    pipe = TextPipeline(
+        HeuristicScorer(),
+        LLMNarrator(FakeLLM(text_response=lambda role, system, user: user)),
+        MockEnricher({}),
+    )
+    pipe.cache.put("p", "факт о месте")
+    place = Place(id="p", name="Место", category="historic", location=GeoPoint(lat=1, lon=2))
+    text = asyncio.run(pipe.elaborate(place, Significance.MEDIUM, history=[]))
+    assert "факт о месте" in text  # cached facts reach the narrator
