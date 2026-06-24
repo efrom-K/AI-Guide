@@ -26,6 +26,21 @@ cp .env.example .env        # add ANTHROPIC_API_KEY (needed from Stage 2)
 .venv\Scripts\python -m pytest -q
 ```
 
+## Deploy on a LAN server (Docker)
+
+Run the backend on a box the phone can reach over Wi-Fi (`Dockerfile` +
+`docker-compose.yml` included; STT model + fact cache live on a named volume):
+```bash
+# on the server, in the backend/ folder:
+cp .env.example .env          # then fill OPENAI_API_KEY (sk-or-...)
+docker compose up -d --build
+curl http://localhost:8000/health        # {"status":"ok",...}
+```
+The phone then connects to `ws://<server-ip>:8000/ws` (Settings → WebSocket URL).
+Key `.env` values for a **real walk**: `GEO_SOURCE=overpass` (not `fixture`),
+`ENRICHMENT_SOURCE=websearch`, `AGENT_BACKEND=openai`. The first voice question
+downloads the Whisper model into the volume (one-time).
+
 ## End-to-end regional testing
 
 `sim/e2e_regions.py` walks real OSM routes through the full agent (discover → score →
