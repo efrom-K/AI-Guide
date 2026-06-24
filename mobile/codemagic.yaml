@@ -10,7 +10,7 @@ workflows:
     environment:
       flutter: stable
       vars:
-        WS_URL: "wss://your-host.example.com/ws"   # <-- the backend host
+        WS_URL: "wss://178.83.121.62.sslip.io/ws"   # <-- the backend host
     scripts:
       - flutter pub get
       - flutter build apk --release --dart-define=WS_URL=$WS_URL
@@ -32,7 +32,7 @@ workflows:
         distribution_type: app_store
         bundle_identifier: com.example.ai_audio_guide   # <-- your real bundle id (not com.example for the store)
       vars:
-        WS_URL: "wss://your-host.example.com/ws"
+        WS_URL: "wss://178.83.121.62.sslip.io/ws"
     scripts:
       - flutter pub get
       - xcode-project use-profiles                  # apply the signing profiles Codemagic fetched

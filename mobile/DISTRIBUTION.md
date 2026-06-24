@@ -9,8 +9,8 @@ When the host is ready, build with its URL via `--dart-define`:
 
 ```bash
 # wss:// (recommended — TLS, works over mobile data, no security exceptions)
-flutter build apk     --release --dart-define=WS_URL=wss://your-host.example.com/ws
-flutter build ipa     --release --dart-define=WS_URL=wss://your-host.example.com/ws   # on a Mac / CI
+flutter build apk     --release --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws
+flutter build ipa     --release --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws   # on a Mac / CI
 ```
 
 - No `--dart-define` → falls back to `ws://localhost:8000/ws` (dev/emulator).
@@ -55,7 +55,7 @@ be built on Windows, so use one of:
 ```bash
 cd mobile
 flutter pub get
-flutter build ipa --release --dart-define=WS_URL=wss://your-host/ws
+flutter build ipa --release --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws
 # then upload build/ios/ipa/*.ipa via Xcode Organizer or `xcrun altool` to TestFlight
 ```
 
