@@ -105,12 +105,13 @@ class Msg {
   Msg(this.kind, this.text);
 }
 
-// A narrated place to pin on the map.
+// A narrated place to pin on the map (tap a pin to read its story).
 class PlaceMark {
   final String id;
   final LatLng point;
   final String name;
-  PlaceMark(this.id, this.point, this.name);
+  String text; // accumulated narration(s) about this place
+  PlaceMark(this.id, this.point, this.name, this.text);
 }
 
 // Red Square waypoints (lat, lon) — same route as the backend sim.
@@ -131,7 +132,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final _urlCtrl = TextEditingController(text: 'ws://localhost:8000/ws');
   final _askCtrl = TextEditingController();
   final _scroll = ScrollController();
@@ -158,6 +159,7 @@ class _HomePageState extends State<HomePage> {
 
   // Map (CARTO dark tiles via flutter_map).
   final MapController _map = MapController();
+  AnimationController? _camCtrl; // drives smooth recenter/follow camera moves
   bool _mapReady = false;
   bool _follow = true; // auto-centre on the user vs free pan
   LatLng _here = const LatLng(55.7525, 37.6231); // Red Square until first fix
@@ -234,15 +236,23 @@ class _HomePageState extends State<HomePage> {
   }
 
   // Pin a narrated place on the map (dedup by id; the latest is "current").
+  // Follow-up narrations about the same place accumulate into its story.
   void _addPlace(Map<String, dynamic> m) {
     final id = m['place_id'] as String?;
     final lat = (m['lat'] as num?)?.toDouble();
     final lon = (m['lon'] as num?)?.toDouble();
     if (id == null || lat == null || lon == null) return;
+    final txt = (m['text'] as String?) ?? '';
     setState(() {
       _currentPlaceId = id;
-      if (!_places.any((p) => p.id == id)) {
-        _places.add(PlaceMark(id, LatLng(lat, lon), (m['place_name'] as String?) ?? ''));
+      PlaceMark? existing;
+      for (final p in _places) {
+        if (p.id == id) existing = p;
+      }
+      if (existing == null) {
+        _places.add(PlaceMark(id, LatLng(lat, lon), (m['place_name'] as String?) ?? '', txt));
+      } else if (txt.isNotEmpty && !existing.text.contains(txt)) {
+        existing.text = '${existing.text}\n\n$txt';
       }
     });
   }
@@ -405,7 +415,9 @@ class _HomePageState extends State<HomePage> {
       _here = LatLng(lat, lon);
       _heading = dir;
     });
-    if (_mapReady && _follow) _map.move(_here, _map.camera.zoom); // keep user centred
+    if (_mapReady && _follow) {
+      _animateTo(_here, duration: const Duration(milliseconds: 400)); // smooth follow
+    }
   }
 
   // ---- real GPS ----------------------------------------------------------
@@ -514,6 +526,7 @@ class _HomePageState extends State<HomePage> {
     _rec.dispose();
     _ch?.sink.close();
     _scroll.dispose();
+    _camCtrl?.dispose();
     _map.dispose();
     super.dispose();
   }
@@ -551,6 +564,62 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  // Smoothly glide the camera to `dest` instead of snapping.
+  void _animateTo(LatLng dest, {Duration duration = const Duration(milliseconds: 650)}) {
+    if (!_mapReady) return;
+    _camCtrl?.dispose();
+    final startLat = _map.camera.center.latitude;
+    final startLng = _map.camera.center.longitude;
+    final zoom = _map.camera.zoom;
+    final ctrl = AnimationController(vsync: this, duration: duration);
+    _camCtrl = ctrl;
+    final curve = CurvedAnimation(parent: ctrl, curve: Curves.easeInOutCubic);
+    curve.addListener(() {
+      final t = curve.value;
+      _map.move(
+        LatLng(startLat + (dest.latitude - startLat) * t,
+            startLng + (dest.longitude - startLng) * t),
+        zoom,
+      );
+    });
+    ctrl.forward();
+  }
+
+  // Tap a map pin -> show the place's name and its story.
+  void _showPlaceInfo(PlaceMark p) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF15161A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.45,
+        maxChildSize: 0.85,
+        builder: (c, controller) => ListView(
+          controller: controller,
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          children: [
+            Row(children: [
+              Icon(Icons.location_on, color: p.id == _currentPlaceId ? _pinCurrent : _pinPast),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(p.name.isEmpty ? '—' : p.name,
+                    style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+              ),
+            ]),
+            const SizedBox(height: 12),
+            Text(
+              p.text.isEmpty ? '…' : p.text,
+              style: const TextStyle(fontSize: 15, height: 1.5, color: Colors.white70),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // -- map ----------------------------------------------------------------
   Widget _mapView() {
     return FlutterMap(
@@ -574,12 +643,15 @@ class _HomePageState extends State<HomePage> {
           for (final p in _places)
             Marker(
               point: p.point,
-              width: 30,
-              height: 30,
-              child: Icon(
-                Icons.location_on,
-                size: p.id == _currentPlaceId ? 30 : 22,
-                color: p.id == _currentPlaceId ? _pinCurrent : _pinPast,
+              width: 44,
+              height: 44,
+              child: GestureDetector(
+                onTap: () => _showPlaceInfo(p),
+                child: Icon(
+                  Icons.location_on,
+                  size: p.id == _currentPlaceId ? 34 : 26,
+                  color: p.id == _currentPlaceId ? _pinCurrent : _pinPast,
+                ),
               ),
             ),
           Marker(
@@ -756,7 +828,7 @@ class _HomePageState extends State<HomePage> {
       shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
       onPressed: () {
         setState(() => _follow = true);
-        if (_mapReady) _map.move(_here, _map.camera.zoom);
+        _animateTo(_here); // smooth glide back to the user
       },
       child: Icon(_follow ? Icons.my_location_rounded : Icons.location_searching_rounded),
     );

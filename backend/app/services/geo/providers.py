@@ -13,6 +13,7 @@ from typing import Protocol, runtime_checkable
 import httpx
 
 from app.config import settings
+from app.shared.geo_math import haversine_m
 from app.shared.schemas import GeoPoint, Place
 
 from .categories import KEEP_TAGS, classify
@@ -49,10 +50,26 @@ def build_query(center: GeoPoint, radius_m: float) -> str:
         for sel in _SELECTORS
         for kind in ("node", "way")
     )
-    return f"[out:json][timeout:25];({body});out center tags;"
+    # "geom" (not "center") so linear/area features (rivers, canals, bays) report
+    # their geometry — we then snap to the point nearest the user, not the way's
+    # midpoint, which for a long canal sits kilometres away.
+    return f"[out:json][timeout:25];({body});out tags geom;"
 
 
-def _element_to_place(el: dict) -> Place | None:
+def _nearest(origin: GeoPoint, geometry: list[dict]) -> tuple[float, float] | None:
+    best: tuple[float, float] | None = None
+    best_d = float("inf")
+    for pt in geometry:
+        la, lo = pt.get("lat"), pt.get("lon")
+        if la is None or lo is None:
+            continue
+        d = haversine_m(origin, GeoPoint(lat=la, lon=lo))
+        if d < best_d:
+            best_d, best = d, (la, lo)
+    return best
+
+
+def _element_to_place(el: dict, origin: GeoPoint) -> Place | None:
     tags = el.get("tags") or {}
     name = tags.get("name")
     if not name:
@@ -60,8 +77,12 @@ def _element_to_place(el: dict) -> Place | None:
     if el.get("type") == "node":
         lat, lon = el.get("lat"), el.get("lon")
     else:
-        center = el.get("center") or {}
-        lat, lon = center.get("lat"), center.get("lon")
+        near = _nearest(origin, el.get("geometry") or [])
+        if near is not None:
+            lat, lon = near
+        else:
+            c = el.get("center") or el.get("bounds") or {}
+            lat, lon = c.get("lat"), c.get("lon")
     if lat is None or lon is None:
         return None
     category, _ = classify(tags)
@@ -75,11 +96,11 @@ def _element_to_place(el: dict) -> Place | None:
     )
 
 
-def parse_elements(elements: list[dict]) -> list[Place]:
+def parse_elements(elements: list[dict], origin: GeoPoint) -> list[Place]:
     places: list[Place] = []
     seen_ids: set[str] = set()
     for el in elements:
-        place = _element_to_place(el)
+        place = _element_to_place(el, origin)
         if place and place.id not in seen_ids:
             seen_ids.add(place.id)
             places.append(place)
@@ -95,7 +116,7 @@ class OverpassProvider:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(self.url, data={"data": query})
             resp.raise_for_status()
-            return parse_elements(resp.json().get("elements", []))
+            return parse_elements(resp.json().get("elements", []), center)
 
 
 # --------------------------------------------------------------------------- #
