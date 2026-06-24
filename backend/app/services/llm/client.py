@@ -211,12 +211,13 @@ class OpenAICompatLLM:
             raise RuntimeError("No OpenAI-compatible model configured (set OPENAI_MODEL)")
         return model
 
-    # Roles where reasoning can be safely capped: the Narrator just writes prose
-    # for an already-chosen place (the skip/silence judgment lives in the Scorer
-    # + the deterministic short-circuits), so it needs little thinking. Scorer
-    # (significance/skip judgment), Companion (answers) and Landmark (premium
-    # prose) keep their reasoning effort.
-    _REASONING_CAP_ROLES = frozenset({Role.NARRATOR})
+    # Roles where reasoning can be safely capped: the narration roles (Narrator
+    # and Landmark) just write prose for an already-chosen place — the skip/silence
+    # judgment lives in the Scorer + the deterministic short-circuits — so they need
+    # little thinking. Leaving Landmark uncapped also let Gemini's planning scaffold
+    # ("3-6 sentences? Yes…") leak into the spoken text, so it is capped too. Scorer
+    # (significance/skip judgment) and Companion (answers) keep their reasoning.
+    _REASONING_CAP_ROLES = frozenset({Role.NARRATOR, Role.LANDMARK})
 
     def _reasoning_for(self, role: Role) -> dict[str, Any] | None:
         cap = settings.openai_reasoning_max_tokens

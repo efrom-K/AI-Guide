@@ -26,6 +26,21 @@ cp .env.example .env        # add ANTHROPIC_API_KEY (needed from Stage 2)
 .venv\Scripts\python -m pytest -q
 ```
 
+## End-to-end regional testing
+
+`sim/e2e_regions.py` walks real OSM routes through the full agent (discover → score →
+narrate, adaptive radius + dedup) across diverse RF regions and abroad — tourist centres
+**and** residential/industrial outskirts — each in a per-session language.
+```bash
+# public overpass-api.de is often blocked → use a mirror
+OVERPASS_URL=https://maps.mail.ru/osm/tools/overpass/api/interpreter \
+  .venv\Scripts\python -m sim.e2e_regions
+# subset: E2E_ONLY=msk-red-square,paris-eiffel  ·  output: E2E_OUT=path.md
+```
+Latest run (2026-06-24): **12 маршрутов, 24 озвучки, ~$0.24** — facts in city centres,
+modest/no-cliché on outskirts, silence where nothing notable, French/Italian abroad. Full
+results, highlights and findings: [`../E2E_REGIONS.md`](../E2E_REGIONS.md).
+
 ## Layout
 ```
 app/
