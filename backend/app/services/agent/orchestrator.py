@@ -132,6 +132,7 @@ class Orchestrator:
                 pace=pace,
                 preferences=st.control_patch,
                 switching=switching,
+                language=st.language,
             )
         except Exception:
             return await self._finish(st, State.ERROR, "error")

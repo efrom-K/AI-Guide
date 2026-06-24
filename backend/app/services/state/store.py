@@ -13,6 +13,13 @@ from app.shared.schemas import SessionState
 _KEY = "session:{}"
 
 
+def _new_session(session_id: str) -> SessionState:
+    """Fresh session seeded with the configured default language."""
+    from app.config import settings
+
+    return SessionState(session_id=session_id, language=settings.default_language)
+
+
 class StateStore(Protocol):
     async def load(self, session_id: str) -> SessionState: ...
     async def save(self, state: SessionState) -> None: ...
@@ -25,7 +32,7 @@ class InMemoryStateStore:
     async def load(self, session_id: str) -> SessionState:
         state = self._data.get(session_id)
         if state is None:
-            return SessionState(session_id=session_id)
+            return _new_session(session_id)
         return state.model_copy(deep=True)
 
     async def save(self, state: SessionState) -> None:
@@ -44,7 +51,7 @@ class RedisStateStore:
     async def load(self, session_id: str) -> SessionState:
         raw = await self._r.get(_KEY.format(session_id))
         if raw is None:
-            return SessionState(session_id=session_id)
+            return _new_session(session_id)
         return SessionState.model_validate_json(raw)
 
     async def save(self, state: SessionState) -> None:

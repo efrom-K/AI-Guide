@@ -196,6 +196,13 @@ class WSControl(BaseModel):
     patch: ControlPatch
 
 
+class WSSetLanguage(BaseModel):
+    """Runtime language switch from the client (and on every (re)connect)."""
+
+    type: Literal["language"] = "language"
+    language: str  # ISO-639-1: en|ru|es|fr|de|it|pt|zh
+
+
 class WSAudioInput(BaseModel):
     type: Literal["audio"] = "audio"
     data_b64: str  # recorded clip (webm/opus, wav, ...) for STT

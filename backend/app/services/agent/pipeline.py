@@ -66,7 +66,9 @@ class TextPipeline:
         pace: Pace = Pace.SLOW,
         preferences: ControlPatch | None = None,
         switching: bool = False,
+        language: str | None = None,
     ) -> StepResult:
+        lang = language or self.language
         await prefetch(candidates, self.enricher, self.cache)
         enriched = attach_facts(candidates, self.cache)
 
@@ -76,7 +78,7 @@ class TextPipeline:
                 address=address or Address(),
                 seen=seen,
                 preferences=preferences,
-                language=self.language,
+                language=lang,
             )
         )
         if decision.next is None:
@@ -101,7 +103,7 @@ class TextPipeline:
                     nothing_new=not candidates,
                     preferences=preferences,
                 ),
-                language=self.language,
+                language=lang,
             )
         )
         return StepResult(text, decision, chosen.place, sig)

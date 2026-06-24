@@ -16,6 +16,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from app.services.agent.factory import build_orchestrator
+from app.services.agent.languages import normalize
 from app.services.agent.orchestrator import Orchestrator, OrchestratorOutput, merge_patch
 from app.services.stt.stt import STTClient, build_stt
 from app.shared.schemas import (
@@ -24,6 +25,7 @@ from app.shared.schemas import (
     WSAudioInput,
     WSControl,
     WSPositionUpdate,
+    WSSetLanguage,
     WSUserUtterance,
 )
 
@@ -101,9 +103,18 @@ async def ws(websocket: WebSocket) -> None:
                 await _send(websocket, await orch.on_utterance(session_id, u.text))
             elif kind == "audio":
                 a = WSAudioInput.model_validate(msg)
-                text = await get_stt().transcribe(base64.b64decode(a.data_b64))
+                state = await orch.store.load(session_id)
+                text = await get_stt().transcribe(
+                    base64.b64decode(a.data_b64), language=state.language
+                )
                 await websocket.send_json({"type": "transcript", "text": text})
                 await _send(websocket, await orch.on_utterance(session_id, text))
+            elif kind == "language":
+                lang = WSSetLanguage.model_validate(msg)
+                state = await orch.store.load(session_id)
+                state.language = normalize(lang.language)
+                await orch.store.save(state)
+                await websocket.send_json({"type": "language", "language": state.language})
             elif kind == "control":
                 c = WSControl.model_validate(msg)
                 state = await orch.store.load(session_id)

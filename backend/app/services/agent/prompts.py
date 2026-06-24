@@ -11,6 +11,7 @@ import json
 from functools import cache
 from pathlib import Path
 
+from app.services.agent.languages import prompt_language
 from app.services.llm.router import Role
 from app.shared.schemas import CompanionInput, NarratorInput, ScorerInput
 
@@ -30,8 +31,12 @@ def _load(name: str) -> str:
 
 
 def system_for(role: Role, language: str) -> str:
-    """CORE(language) + the role-specific block — the cacheable static prefix."""
-    core = _load("core").replace("{language}", language)
+    """CORE(language) + the role-specific block — the cacheable static prefix.
+
+    ``language`` is an ISO-639-1 code (e.g. ``en``); it is mapped to a readable
+    name so the model sees "English", not "en".
+    """
+    core = _load("core").replace("{language}", prompt_language(language))
     return f"{core}\n\n---\n\n{_load(_ROLE_FILE[role])}"
 
 
