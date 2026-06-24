@@ -23,3 +23,6 @@ Thumbs.db
 
 # Local fact-enrichment cache
 backend/.enrich_cache.json
+
+# stray local backend tarball (may contain secrets) — never commit
+guide-backend.tgz

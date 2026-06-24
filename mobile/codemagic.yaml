@@ -1,0 +1,46 @@
+# Codemagic CI — build the test apps without a Mac and ship iOS to TestFlight.
+# In the Codemagic UI: set this app's project path to `mobile/`, add an App Store Connect
+# API key integration, set your bundle id, and the WS_URL (the backend host). Then run a workflow.
+# Docs: https://docs.codemagic.io/yaml-quick-start/building-a-flutter-app/
+
+workflows:
+  android-test:
+    name: Android test APK
+    instance_type: linux_x2
+    environment:
+      flutter: stable
+      vars:
+        WS_URL: "wss://your-host.example.com/ws"   # <-- the backend host
+    scripts:
+      - flutter pub get
+      - flutter build apk --release --dart-define=WS_URL=$WS_URL
+    artifacts:
+      - build/**/outputs/**/*.apk                    # download/share the APK from the build
+    # publishing:  # optional Google Play internal track — add a service account first
+    #   google_play:
+    #     credentials: $GCLOUD_SERVICE_ACCOUNT_CREDENTIALS
+    #     track: internal
+
+  ios-testflight:
+    name: iOS TestFlight
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: CodemagicASCKey            # <-- name of your App Store Connect API key in Codemagic
+    environment:
+      flutter: stable
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.example.ai_audio_guide   # <-- your real bundle id (not com.example for the store)
+      vars:
+        WS_URL: "wss://your-host.example.com/ws"
+    scripts:
+      - flutter pub get
+      - xcode-project use-profiles                  # apply the signing profiles Codemagic fetched
+      - flutter build ipa --release --dart-define=WS_URL=$WS_URL
+          --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true                  # your lead installs via the TestFlight app

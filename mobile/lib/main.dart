@@ -40,6 +40,11 @@ const kLangs = <String, ({String label, String tts})>{
 // Map an arbitrary locale code to a supported one, else fall back to English.
 String normLang(String code) => kLangs.containsKey(code) ? code : 'en';
 
+// Default backend URL — baked at build time so a test build points at the host
+// with no manual setup:  flutter build ... --dart-define=WS_URL=wss://host/ws
+// The in-app Settings field overrides it. Falls back to localhost for dev/emulator.
+const kDefaultWsUrl = String.fromEnvironment('WS_URL', defaultValue: 'ws://localhost:8000/ws');
+
 // True under `flutter test` — lets us skip live map-tile network there.
 bool _underTest() {
   try {
@@ -136,7 +141,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
-  final _urlCtrl = TextEditingController(text: 'ws://localhost:8000/ws');
+  final _urlCtrl = TextEditingController(text: kDefaultWsUrl);
   final _askCtrl = TextEditingController();
   final _scroll = ScrollController();
   WebSocketChannel? _ch;
