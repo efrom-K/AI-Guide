@@ -170,6 +170,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   double _mapRotation = 0; // current map bearing (deg); 0 = north up
   LatLng _here = const LatLng(55.7525, 37.6231); // Red Square until first fix
   double _heading = 0; // degrees, for the bearing arrow
+  double _screenH = 800; // logical screen height (for keeping the cursor above the card)
   final List<PlaceMark> _places = []; // narrated places pinned on the map
   String? _currentPlaceId; // the place being narrated now (highlighted)
 
@@ -444,7 +445,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _heading = dir;
     });
     if (_mapReady && _follow) {
-      _animateTo(_here, duration: const Duration(milliseconds: 400)); // smooth follow
+      _animateTo(_followCenter(), duration: const Duration(milliseconds: 400)); // smooth follow
     }
   }
 
@@ -596,6 +597,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         Text(s.label, style: TextStyle(fontSize: 12.5, color: s.color, fontWeight: FontWeight.w600)),
       ]),
     );
+  }
+
+  // Camera target that keeps the user's cursor in the visible area ABOVE the
+  // bottom card: shift the centre south so the user sits ~1/3 from the top.
+  LatLng _followCenter() {
+    if (!_mapReady) return _here;
+    final shiftPx = _screenH * 0.18; // move the user from 50% up to ~32% of the screen
+    final mpp = 156543.03392 * cos(_here.latitude * pi / 180) / pow(2, _map.camera.zoom);
+    final shiftLat = (shiftPx * mpp) / 111320.0;
+    return LatLng(_here.latitude - shiftLat, _here.longitude);
   }
 
   // Smoothly glide the camera to `dest` instead of snapping.
@@ -894,7 +905,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
       onPressed: () {
         setState(() => _follow = true);
-        _animateTo(_here); // smooth glide back to the user
+        _animateTo(_followCenter()); // smooth glide; keep the cursor above the card
       },
       child: Icon(_follow ? Icons.my_location_rounded : Icons.location_searching_rounded),
     );
@@ -1044,6 +1055,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final l = AppLocalizations.of(context)!;
+    _screenH = MediaQuery.of(context).size.height;
     return Scaffold(
       body: Stack(children: [
         Positioned.fill(child: _mapView()),
