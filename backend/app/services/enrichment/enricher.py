@@ -9,8 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import urllib.parse
 from pathlib import Path
 from typing import Protocol
+
+import httpx
 
 from app.shared.schemas import Candidate, Place
 
@@ -129,6 +132,89 @@ class WebSearchEnricher:
         self._cache[place.id] = facts
         self._persist()
         return facts
+
+
+class WikiEnricher:
+    """Free facts from Wikipedia/Wikidata for OSM places tagged wikipedia=/wikidata=.
+    Most landmarks carry these tags, so this covers them at no cost (and higher
+    quality) — the paid web search is only needed for the untagged long tail."""
+
+    def __init__(
+        self, *, summary_chars: int = 700, prefer_langs: tuple[str, ...] = ("ru", "en")
+    ) -> None:
+        self._chars = summary_chars
+        self._prefer = prefer_langs
+        self._cache: dict[str, str | None] = {}
+
+    async def facts_for(self, place: Place, context: str | None = None) -> str | None:
+        wp = place.tags.get("wikipedia")
+        wd = place.tags.get("wikidata")
+        if not wp and not wd:
+            return None
+        if place.id in self._cache:
+            return self._cache[place.id]
+        facts: str | None = None
+        try:
+            # Wikimedia requires a descriptive User-Agent (a bare one is 403'd).
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                follow_redirects=True,
+                headers={
+                    "User-Agent": "AI-Audio-Guide/0.1 "
+                    "(https://github.com/ai-audio-guide; audioguide@example.org)"
+                },
+            ) as client:
+                if wp:
+                    lang, _, title = wp.partition(":")
+                    if not title:  # tag was just a title, no "lang:" prefix
+                        lang, title = self._prefer[0], wp
+                    facts = await self._summary(client, lang, title)
+                if not facts and wd:
+                    facts = await self._from_wikidata(client, wd)
+        except Exception as e:  # transient network/parse — don't cache, retry later
+            _log.warning("wiki enrich failed for %s: %s", place.id, e)
+            return None
+        self._cache[place.id] = facts
+        return facts
+
+    async def _summary(self, client: httpx.AsyncClient, lang: str, title: str) -> str | None:
+        t = urllib.parse.quote(title.replace(" ", "_"), safe="")
+        r = await client.get(f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{t}")
+        if r.status_code != 200:
+            return None
+        extract = (r.json().get("extract") or "").strip()
+        return extract[: self._chars] if extract else None
+
+    async def _from_wikidata(self, client: httpx.AsyncClient, qid: str) -> str | None:
+        r = await client.get(f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json")
+        if r.status_code != 200:
+            return None
+        links = r.json().get("entities", {}).get(qid, {}).get("sitelinks", {})
+        for lang in self._prefer:
+            sl = links.get(f"{lang}wiki")
+            if sl:
+                return await self._summary(client, lang, sl["title"])
+        return None
+
+
+class CompositeEnricher:
+    """Wikipedia first (free), then the paid web search only for places without a
+    wiki article and notable enough (type weight >= ``web_min_weight``)."""
+
+    def __init__(self, wiki: Enricher, web: Enricher, *, web_min_weight: float = 0.0) -> None:
+        self._wiki = wiki
+        self._web = web
+        self._web_min_weight = web_min_weight
+
+    async def facts_for(self, place: Place, context: str | None = None) -> str | None:
+        facts = await self._wiki.facts_for(place, context)
+        if facts:
+            return facts
+        from app.services.geo.categories import weight_for
+
+        if weight_for(place.category) >= self._web_min_weight:
+            return await self._web.facts_for(place, context)
+        return None
 
 
 async def prefetch(

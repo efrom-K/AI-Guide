@@ -12,7 +12,13 @@ from app.services.agent.narrator import LLMNarrator, Narrator, TemplateNarrator
 from app.services.agent.orchestrator import Orchestrator
 from app.services.agent.pipeline import TextPipeline
 from app.services.agent.scorer import HeuristicScorer, LLMScorer, Scorer
-from app.services.enrichment.enricher import Enricher, MockEnricher, WebSearchEnricher
+from app.services.enrichment.enricher import (
+    CompositeEnricher,
+    Enricher,
+    MockEnricher,
+    WebSearchEnricher,
+    WikiEnricher,
+)
 from app.services.geo.discovery import Discovery
 from app.services.geo.providers import OverpassProvider, StaticPlaceProvider
 from app.services.state.store import StateStore, default_store
@@ -46,11 +52,16 @@ def _enricher() -> Enricher:
     if settings.enrichment_source == "websearch":
         from app.services.llm.client import OpenAICompatLLM
 
-        return WebSearchEnricher(
+        web = WebSearchEnricher(
             OpenAICompatLLM(),
             max_results=settings.web_search_max_results,
             max_tokens=settings.web_search_max_tokens,
             cache_path=settings.enrich_cache_path,
+        )
+        # Wikipedia/Wikidata first (free, high quality); paid web search only for
+        # places without a wiki article and notable enough.
+        return CompositeEnricher(
+            WikiEnricher(), web, web_min_weight=settings.enrich_min_weight
         )
     return MockEnricher.from_json(_FIX / "facts_red_square.json")
 
@@ -67,6 +78,5 @@ def build_orchestrator(store: StateStore | None = None) -> Orchestrator:
         # enriches every candidate inline (instant).
         enrich_top_k=settings.enrich_top_k if web else None,
         enrich_timeout_s=settings.enrich_timeout_s if web else None,
-        enrich_min_weight=settings.enrich_min_weight if web else 0.0,
     )
     return Orchestrator(_discovery(), pipeline, companion, store or default_store())

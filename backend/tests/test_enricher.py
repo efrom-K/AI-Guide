@@ -85,3 +85,51 @@ def test_disk_cache_persists(tmp_path):
     enr2 = WebSearchEnricher(llm2, cache_path=str(path))
     assert asyncio.run(enr2.facts_for(_place("p9"))) == "* факт"
     assert llm2.calls == 0
+
+
+# -- composite: wiki-first, paid web only for non-wiki notable places ---------
+class FakeEnricher:
+    def __init__(self, reply=None):
+        self._reply = reply
+        self.calls = 0
+
+    async def facts_for(self, place, context=None):
+        self.calls += 1
+        return self._reply
+
+
+def test_composite_prefers_wiki_and_skips_web():
+    from app.services.enrichment.enricher import CompositeEnricher
+    wiki = FakeEnricher("wiki facts")
+    web = FakeEnricher("web facts")
+    comp = CompositeEnricher(wiki, web, web_min_weight=0.0)
+    p = _place("p1", "Памятник")
+    assert asyncio.run(comp.facts_for(p)) == "wiki facts"
+    assert web.calls == 0  # wiki hit -> no paid web search
+
+
+def test_composite_falls_back_to_web_when_no_wiki():
+    from app.services.enrichment.enricher import CompositeEnricher
+    wiki = FakeEnricher(None)  # no wiki article
+    web = FakeEnricher("web facts")
+    # category "historic" -> weight 0.75 >= 0.5 threshold -> web is used
+    comp = CompositeEnricher(wiki, web, web_min_weight=0.5)
+    assert asyncio.run(comp.facts_for(_place("p2"))) == "web facts"
+    assert web.calls == 1
+
+
+def test_composite_skips_web_for_mundane_below_threshold():
+    from app.services.enrichment.enricher import CompositeEnricher
+    from app.shared.schemas import GeoPoint, Place
+    wiki = FakeEnricher(None)
+    web = FakeEnricher("web facts")
+    comp = CompositeEnricher(wiki, web, web_min_weight=0.5)
+    shop = Place(id="s", name="Shop", category="shop", location=GeoPoint(lat=1, lon=2))
+    assert asyncio.run(comp.facts_for(shop)) is None  # shop weight 0.25 < 0.5
+    assert web.calls == 0
+
+
+def test_wiki_enricher_no_tag_returns_none():
+    from app.services.enrichment.enricher import WikiEnricher
+    # no wikipedia/wikidata tag -> None without any network call
+    assert asyncio.run(WikiEnricher().facts_for(_place("nt"))) is None
