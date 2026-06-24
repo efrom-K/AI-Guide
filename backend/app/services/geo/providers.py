@@ -37,7 +37,7 @@ _SELECTORS = (
     '"natural"~"water|wood|peak|bay|beach|cape|cliff|spring|waterfall|volcano|glacier|wetland"',
     '"water"',
     '"waterway"~"river|canal|waterfall|dam"',
-    '"landuse"~"reservoir|forest"',
+    '"landuse"~"reservoir|forest|orchard|vineyard|allotments"',
     # notable man-made structures
     '"man_made"~"bridge|tower|lighthouse|watermill|windmill|pier|obelisk"',
 )

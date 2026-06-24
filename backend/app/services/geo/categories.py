@@ -40,6 +40,9 @@ WEIGHT_BY_CATEGORY: dict[str, float] = {
     "wetland": 0.5,
     "forest": 0.45,
     "wood": 0.45,
+    "orchard": 0.45,
+    "vineyard": 0.5,
+    "allotments": 0.4,
     "park": 0.5,
     "garden": 0.5,
     # notable structures
@@ -148,8 +151,9 @@ def _category(t: dict[str, str]) -> str:
     waterway = t.get("waterway")
     if waterway in {"river", "canal", "waterfall", "dam"}:
         return "waterfall" if waterway == "waterfall" else "river"
-    if t.get("landuse") == "forest":
-        return "forest"
+    landuse = t.get("landuse")
+    if landuse in {"forest", "orchard", "vineyard", "allotments"}:
+        return landuse
 
     man_made = t.get("man_made")
     if man_made in {"bridge", "tower", "lighthouse", "watermill", "windmill", "obelisk"}:
