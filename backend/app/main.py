@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import uuid
 from pathlib import Path
 
@@ -23,10 +24,12 @@ from app.services.stt.stt import STTClient, build_stt
 from app.shared.schemas import (
     GeoPoint,
     Heading,
+    Pace,
     WSAudioInput,
     WSControl,
     WSPositionUpdate,
     WSSetLanguage,
+    WSSetTheme,
     WSUserUtterance,
 )
 
@@ -95,48 +98,142 @@ async def _send(ws: WebSocket, out: OrchestratorOutput) -> None:
         await ws.send_json({"type": "reply", "text": out.text})
 
 
+class _SessionRuntime:
+    """Per-connection runtime. A background *producer* generates the narration,
+    decoupled from the GPS messages: ``position`` just refreshes the live context,
+    while the producer emits ONE paragraph at a time, paced by the client's
+    ``played`` signal (with a length-based fallback so older clients still flow).
+
+    A question (``utterance``/``audio``) has top priority: it cancels the in-flight
+    generation (its half-built, unsaved state is discarded), answers immediately,
+    then the producer resumes — and the orchestrator weaves the answer in next.
+    """
+
+    def __init__(self, ws: WebSocket, orch: Orchestrator, session_id: str) -> None:
+        self.ws = ws
+        self.orch = orch
+        self.session_id = session_id
+        self.live_position: GeoPoint | None = None
+        self.live_heading = Heading()
+        self.live_pace = Pace.SLOW
+        self.played = asyncio.Event()
+        self.wake = asyncio.Event()  # context changed (new position / area / theme)
+        self.resume = asyncio.Event()  # a barge-in finished; producer may continue
+        self.barging = False
+        self.step_task: asyncio.Task | None = None
+        self.send_lock = asyncio.Lock()
+
+    async def send_out(self, out: OrchestratorOutput) -> None:
+        async with self.send_lock:
+            await _send(self.ws, out)
+
+    async def send_json(self, obj: dict) -> None:
+        async with self.send_lock:
+            await self.ws.send_json(obj)
+
+    async def run_producer(self) -> None:
+        while True:
+            self.step_task = asyncio.ensure_future(self._step())
+            try:
+                await self.step_task
+            except asyncio.CancelledError:
+                if self.barging:  # preempted by a question, not a shutdown
+                    self.barging = False
+                    await self.resume.wait()
+                    continue
+                raise
+            finally:
+                self.step_task = None
+
+    async def _step(self) -> None:
+        if self.live_position is None:  # no GPS yet — idle until the first fix
+            self.wake.clear()
+            await self.wake.wait()
+            return
+        out = await self.orch.on_position(
+            self.session_id, self.live_position, self.live_heading, self.live_pace
+        )
+        await self.send_out(out)
+        if out.kind == "narration" and out.text:
+            await self._wait_played(out.text)  # pace: don't outrun the player
+        else:
+            self.wake.clear()  # nothing to say -> idle until the context changes
+            await self.wake.wait()
+
+    async def _wait_played(self, text: str) -> None:
+        self.played.clear()
+        # ~12 chars/sec speaking; fall back if the client never signals (old clients)
+        fallback = min(max(len(text) / 12.0, 4.0), 22.0)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self.played.wait(), timeout=fallback)
+
+    async def handle_question(self, msg: dict, kind: str) -> None:
+        """Top-priority barge-in: cancel the producer's current step, answer now."""
+        self.barging = True
+        self.resume.clear()
+        if self.step_task is not None and not self.step_task.done():
+            self.step_task.cancel()
+        try:
+            if kind == "audio":
+                a = WSAudioInput.model_validate(msg)
+                st = await self.orch.store.load(self.session_id)
+                text = await get_stt().transcribe(
+                    base64.b64decode(a.data_b64), language=st.language
+                )
+                await self.send_json({"type": "transcript", "text": text})
+            else:
+                text = WSUserUtterance.model_validate(msg).text
+            out = await self.orch.on_utterance(self.session_id, text)
+            await self.send_out(out)
+        finally:
+            self.resume.set()  # let the producer continue
+
+
 @app.websocket("/ws")
 async def ws(websocket: WebSocket) -> None:
     await websocket.accept()
     orch = get_orchestrator()
-    session_id = uuid.uuid4().hex
+    rt = _SessionRuntime(websocket, orch, uuid.uuid4().hex)
+    producer = asyncio.ensure_future(rt.run_producer())
     try:
         while True:
             msg = await websocket.receive_json()
             kind = msg.get("type")
             if kind == "position":
                 p = WSPositionUpdate.model_validate(msg)
-                out = await orch.on_position(
-                    session_id,
-                    GeoPoint(lat=p.lat, lon=p.lon),
-                    Heading(direction_deg=p.direction_deg, gaze_confidence=p.gaze_confidence),
-                    p.pace,
+                rt.live_position = GeoPoint(lat=p.lat, lon=p.lon)
+                rt.live_heading = Heading(
+                    direction_deg=p.direction_deg, gaze_confidence=p.gaze_confidence
                 )
-                await _send(websocket, out)
-            elif kind == "utterance":
-                u = WSUserUtterance.model_validate(msg)
-                await _send(websocket, await orch.on_utterance(session_id, u.text))
-            elif kind == "audio":
-                a = WSAudioInput.model_validate(msg)
-                state = await orch.store.load(session_id)
-                text = await get_stt().transcribe(
-                    base64.b64decode(a.data_b64), language=state.language
-                )
-                await websocket.send_json({"type": "transcript", "text": text})
-                await _send(websocket, await orch.on_utterance(session_id, text))
+                rt.live_pace = p.pace
+                rt.wake.set()
+            elif kind == "played":
+                rt.played.set()
+            elif kind in ("utterance", "audio"):
+                await rt.handle_question(msg, kind)
             elif kind == "language":
                 lang = WSSetLanguage.model_validate(msg)
-                state = await orch.store.load(session_id)
+                state = await orch.store.load(rt.session_id)
                 state.language = normalize(lang.language)
                 await orch.store.save(state)
-                await websocket.send_json({"type": "language", "language": state.language})
+                await rt.send_json({"type": "language", "language": state.language})
+            elif kind == "theme":
+                t = WSSetTheme.model_validate(msg)
+                await orch.set_theme(rt.session_id, t.theme)
+                rt.wake.set()
             elif kind == "control":
                 c = WSControl.model_validate(msg)
-                state = await orch.store.load(session_id)
+                state = await orch.store.load(rt.session_id)
                 state.control_patch = merge_patch(state.control_patch, c.patch)
                 await orch.store.save(state)
-                await websocket.send_json({"type": "state", "state": state.state})
+                await rt.send_json({"type": "state", "state": state.state})
             else:
-                await websocket.send_json({"type": "error", "message": f"unknown type: {kind}"})
+                await rt.send_json({"type": "error", "message": f"unknown type: {kind}"})
     except WebSocketDisconnect:
-        return
+        pass
+    finally:
+        producer.cancel()
+        if rt.step_task is not None:
+            rt.step_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await producer

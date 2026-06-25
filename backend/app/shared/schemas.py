@@ -285,6 +285,20 @@ class WSAudioInput(BaseModel):
     format: str = "webm"
 
 
+class WSPlayed(BaseModel):
+    """Client finished speaking the current paragraph — the cadence signal that
+    tells the server's narration producer to emit the next one."""
+
+    type: Literal["played"] = "played"
+
+
+class WSSetTheme(BaseModel):
+    """User picked/voiced a topic for the tour to revolve around (empty => auto)."""
+
+    type: Literal["theme"] = "theme"
+    theme: str = ""
+
+
 # server -> client
 class WSNarration(BaseModel):
     type: Literal["narration"] = "narration"
