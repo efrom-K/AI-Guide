@@ -118,7 +118,15 @@ adb -s emulator-5554 shell monkey -p com.example.ai_audio_guide -c android.inten
   для `sdkmanager`/`avdmanager`/эмулятора (иначе «Java 17+ required»).
 - **LM Studio** (если используем qwen): `http://localhost:1234/v1`, модель `qwen/qwen3.5-9b`,
   RTX 3060 12GB.
-- **OpenRouter**: ключ в `backend/.env` (gitignored). Модель `google/gemini-3.5-flash`.
+- **OpenRouter**: ключ в `backend/.env` (gitignored). Модель в деве — `google/gemini-3.5-flash`,
+  **в проде — `deepseek/deepseek-chat`** (см. ниже про региональный блок).
+
+> ⚠️ **Региональный блок (прод-хост, 2026-06-25).** OpenRouter геоблокирует OpenAI / Anthropic /
+> Google (Gemini) из региона нашего сервера (РФ): любой вызов → HTTP 403 *"This model is not
+> available in your region."* — гид подключался, но молчал. Фикс: на проде `OPENAI_MODEL=deepseek/deepseek-chat`
+> (доступен из региона, тянет строгий `json_schema` Scorer'а и мультиязычный рассказ; reasoning-кап
+> не нужен — V3 не reasoning-модель). Проверено сквозным WS-смоуком: рассказ по Красной площади
+> приходит. В деве Gemini остаётся.
 
 ---
 
