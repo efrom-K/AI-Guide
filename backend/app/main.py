@@ -15,12 +15,13 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config import settings
 from app.services.agent.factory import build_orchestrator
 from app.services.agent.languages import normalize
+from app.services.llm.client import METER, SESSION_ID
 from app.services.agent.orchestrator import Orchestrator, OrchestratorOutput, merge_patch
 from app.services.stt.stt import STTClient, build_stt
 from app.shared.schemas import (
@@ -37,6 +38,11 @@ from app.shared.schemas import (
 
 app = FastAPI(title="AI Audio Guide", version="0.1.0")
 _log = logging.getLogger("aiguide.ws")
+
+# lightweight observability state
+_active_sessions: set[str] = set()
+_counters = {"step_errors": 0, "question_errors": 0}
+_READY_FAIL_THRESHOLD = 3  # consecutive LLM failures => /ready goes unhealthy
 
 _WEB_INDEX = Path(__file__).resolve().parent.parent / "web" / "index.html"
 _orchestrator: Orchestrator | None = None
@@ -74,6 +80,33 @@ async def _warm_stt() -> None:
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "ai-audio-guide", "version": app.version}
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    """Readiness: unhealthy if the last few LLM calls all failed (quota/region/outage),
+    so a wedged backend can be detected/restarted instead of looking 'healthy'."""
+    ok = METER.consecutive_failures < _READY_FAIL_THRESHOLD
+    body = {
+        "ready": ok,
+        "active_sessions": len(_active_sessions),
+        "consecutive_llm_failures": METER.consecutive_failures,
+    }
+    return JSONResponse(body, status_code=200 if ok else 503)
+
+
+@app.get("/stats")
+async def stats(token: str = "") -> dict:
+    """Admin-only ops view: active sessions, cumulative + per-session cost, errors.
+    Disabled unless STATS_TOKEN is set and matches."""
+    if not settings.stats_token or token != settings.stats_token:
+        raise HTTPException(status_code=404)
+    return {
+        "active_sessions": len(_active_sessions),
+        "ws_step_errors": _counters["step_errors"],
+        "ws_question_errors": _counters["question_errors"],
+        **METER.snapshot(),
+    }
 
 
 @app.get("/")
@@ -149,6 +182,7 @@ class _SessionRuntime:
                     continue
                 raise  # genuine shutdown -> let the producer exit
             except Exception as e:  # noqa: BLE001 — a bad step must NOT kill the producer
+                _counters["step_errors"] += 1
                 _log.warning("producer step failed (%s): %s", self.session_id, e)
                 await asyncio.sleep(2)  # throttle so a persistent failure can't hot-loop
             finally:
@@ -159,6 +193,7 @@ class _SessionRuntime:
             self.wake.clear()
             await self.wake.wait()
             return
+        SESSION_ID.set(self.session_id)  # attribute LLM cost to this session
         out = await self.orch.on_position(
             self.session_id, self.live_position, self.live_heading, self.live_pace
         )
@@ -180,6 +215,7 @@ class _SessionRuntime:
         """Top-priority barge-in: cancel the producer's current step, answer now."""
         self.barging = True
         self.resume.clear()
+        SESSION_ID.set(self.session_id)  # attribute the answer's LLM cost to this session
         if self.step_task is not None and not self.step_task.done():
             self.step_task.cancel()
         try:
@@ -195,6 +231,7 @@ class _SessionRuntime:
             out = await self.orch.on_utterance(self.session_id, text)
             await self.send_out(out)
         except Exception as e:  # noqa: BLE001 — a failed question must not drop the session
+            _counters["question_errors"] += 1
             _log.warning("question handling failed (%s): %s", self.session_id, e)
             with contextlib.suppress(Exception):
                 await self.send_json({"type": "error", "message": "не расслышал, попробуй ещё раз"})
@@ -237,6 +274,7 @@ async def ws(websocket: WebSocket) -> None:
     await websocket.accept()
     orch = get_orchestrator()
     rt = _SessionRuntime(websocket, orch, uuid.uuid4().hex)
+    _active_sessions.add(rt.session_id)
     producer = asyncio.ensure_future(rt.run_producer())
     try:
         while True:
@@ -290,3 +328,4 @@ async def ws(websocket: WebSocket) -> None:
             await producer
         with contextlib.suppress(Exception):
             await orch.store.delete(rt.session_id)  # free the session promptly
+        _active_sessions.discard(rt.session_id)

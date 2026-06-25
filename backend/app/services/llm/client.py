@@ -14,11 +14,16 @@ import asyncio
 import json
 import logging
 import re
+from contextvars import ContextVar
 from typing import Any, Protocol
 
 import httpx
 
 from app.config import settings
+
+# Set per WS turn so the meter can attribute LLM cost to a session (propagates
+# through awaits within the task that sets it).
+SESSION_ID: ContextVar[str] = ContextVar("aiguide_session", default="")
 
 from .router import Role, model_for
 
@@ -57,6 +62,44 @@ class TokenMeter:
         self.tok_cached = 0  # prompt tokens served from the provider cache
         self.provider_cost = 0.0  # USD reported by OpenRouter (accounts for cache)
         self._warned = False
+        self.errors = 0  # total LLM call failures (after retry)
+        self.consecutive_failures = 0  # reset on any success — drives /ready
+        self.by_session: dict[str, dict] = {}  # session_id -> {calls, cost, tok_in, tok_out}
+
+    def note_failure(self) -> None:
+        self.errors += 1
+        self.consecutive_failures += 1
+
+    def _attribute(self, ti: int, to: int, usage: dict[str, Any]) -> None:
+        sid = SESSION_ID.get()
+        if not sid:
+            return
+        if sid not in self.by_session and len(self.by_session) >= 2000:
+            self.by_session.pop(next(iter(self.by_session)), None)  # FIFO cap
+        s = self.by_session.setdefault(
+            sid, {"calls": 0, "cost": 0.0, "tok_in": 0, "tok_out": 0}
+        )
+        s["calls"] += 1
+        s["tok_in"] += ti
+        s["tok_out"] += to
+        if usage.get("cost") is not None:
+            s["cost"] += float(usage["cost"])
+
+    def snapshot(self) -> dict[str, Any]:
+        top = sorted(self.by_session.items(), key=lambda kv: kv[1]["cost"], reverse=True)[:20]
+        return {
+            "calls": self.calls,
+            "cost_usd": round(self.cost_usd, 4),
+            "tok_in": self.tok_in,
+            "tok_out": self.tok_out,
+            "errors": self.errors,
+            "consecutive_failures": self.consecutive_failures,
+            "tracked_sessions": len(self.by_session),
+            "top_sessions": [
+                {"session": k, "calls": v["calls"], "cost_usd": round(v["cost"], 4)}
+                for k, v in top
+            ],
+        }
 
     @property
     def cost_usd(self) -> float:
@@ -84,6 +127,8 @@ class TokenMeter:
         self.tok_cached += cached
         if usage.get("cost") is not None:
             self.provider_cost += float(usage["cost"])
+        self.consecutive_failures = 0  # a successful call clears the failure streak
+        self._attribute(ti, to, usage)
         budget = settings.usd_session_budget
         cost = self.cost_usd
         hit = f" cache={cached}" if cached else ""
@@ -275,7 +320,11 @@ class OpenAICompatLLM:
         if settings.openai_prompt_cache:
             # ask OpenRouter to return cost + cached-token accounting in usage
             payload["usage"] = {"include": True}
-        data = await self._post_with_retry(payload, role)
+        try:
+            data = await self._post_with_retry(payload, role)
+        except Exception:
+            METER.note_failure()  # feeds /ready + error counters
+            raise
         METER.record(role, model, data.get("usage"))
         return data["choices"][0]["message"]["content"].strip()
 
