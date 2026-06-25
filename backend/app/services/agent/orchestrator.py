@@ -19,10 +19,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from app.config import settings
 from app.services.agent.companion import Companion
 from app.services.agent.pipeline import TextPipeline
 from app.services.geo.discovery import Discovery
+from app.services.geo.geocoder import Geocoder
 from app.services.state.store import StateStore
+from app.shared.geo_math import haversine_m
 from app.shared.schemas import (
     Candidate,
     CompanionInput,
@@ -86,11 +89,13 @@ class Orchestrator:
         pipeline: TextPipeline,
         companion: Companion,
         store: StateStore,
+        geocoder: Geocoder | None = None,
     ) -> None:
         self.discovery = discovery
         self.pipeline = pipeline
         self.companion = companion
         self.store = store
+        self.geocoder = geocoder
 
     # -- narration hot-path ------------------------------------------------- #
     async def on_position(
@@ -103,6 +108,16 @@ class Orchestrator:
             # server can't reach the cloud — degrade to silence (cached replay
             # is the client's job offline). Stay until GO_ONLINE.
             return await self._finish(st, State.OFFLINE, "offline")
+
+        # resolve which city/district/street we're in (move-gated, off-cadence).
+        await self._resolve_area(st, position)
+
+        # general -> specific: when we first enter an area, open with it (a short
+        # city/district intro) before descending to the concrete objects inside.
+        if not st.control_patch.mute:
+            intro = await self._maybe_area_intro(st, heading, pace)
+            if intro is not None:
+                return intro
 
         try:
             result = await self.discovery.discover_adaptive(
@@ -121,12 +136,12 @@ class Orchestrator:
         # place (bounded), so the user isn't left hanging in an empty area.
         fp = fingerprint(result.candidates)
         if fp == st.last_candidate_fingerprint and not result.expanded:
-            return await self._elaborate_or_silence(st, heading, pace)
+            return await self._continue_monologue(st, heading, pace)
         st.last_candidate_fingerprint = fp
 
-        # nothing unseen nearby -> don't waste a Scorer call; elaborate or stay quiet.
+        # nothing unseen nearby -> don't waste a Scorer call; carry the monologue.
         if not result.candidates:
-            return await self._elaborate_or_silence(st, heading, pace, expanded=result.expanded)
+            return await self._continue_monologue(st, heading, pace, expanded=result.expanded)
 
         switching = bool(
             st.last_place_id
@@ -155,18 +170,72 @@ class Orchestrator:
             st.last_place = out.place
             st.last_significance = out.significance
             st.elaboration_count = 0  # fresh place — allow follow-ups again
+            st.area_beats = 0  # after an object, let the area speak again (return to it)
             state = State.SWITCHING if switching else State.NARRATING
             return await self._finish(
                 st, state, "narration", out.text, out.place, out.significance
             )
 
-        return await self._elaborate_or_silence(st, heading, pace, expanded=result.expanded)
+        return await self._continue_monologue(st, heading, pace, expanded=result.expanded)
 
-    # When nothing new is nearby, tell more about the last place (capped) instead
-    # of going silent; fall back to silence once there's nothing left to add.
-    async def _elaborate_or_silence(
+    # -- area resolution (general -> specific spine) ------------------------ #
+    async def _resolve_area(self, st, position: GeoPoint) -> None:
+        """Reverse-geocode the current city/district/street, move-gated so the
+        extra request is rare. A change of area resets the area monologue state."""
+        if self.geocoder is None:
+            return
+        moved = (
+            st.last_geo_pos is None
+            or haversine_m(position, st.last_geo_pos) >= settings.geocoder_min_move_m
+        )
+        if not moved:
+            return
+        try:
+            addr = await self.geocoder.reverse(position, st.language)
+        except Exception:
+            return
+        st.last_geo_pos = position
+        if not any((addr.country, addr.city, addr.district, addr.street)):
+            return  # geocoder came back empty — keep whatever we had
+        st.address = addr
+        new_key = addr.district or addr.city
+        if new_key and new_key != st.area_key:
+            st.area_key = new_key
+            st.area_facts = None
+            st.area_intro_done = False
+            st.area_beats = 0
+
+    def _has_area(self, st) -> bool:
+        a = st.address
+        return bool(a.district or a.city or a.street)
+
+    async def _maybe_area_intro(
+        self, st, heading: Heading, pace: Pace
+    ) -> OrchestratorOutput | None:
+        """Open a freshly entered area with a short city/district line, before
+        descending to the objects inside it. Returns None if no intro is due."""
+        if st.area_intro_done or not self._has_area(st):
+            return None
+        st.area_intro_done = True  # one opener per area, even if it comes back empty
+        text = await self._area_line(st, pace, intro=True)
+        if not text:
+            return None
+        return await self._finish(st, State.NARRATING, "narration", text)
+
+    # When nothing new is nearby, carry a continuous monologue: keep telling about
+    # the area (district/street/city), then fall back to elaborating the last
+    # object, and only then go silent.
+    async def _continue_monologue(
         self, st, heading: Heading, pace: Pace, *, expanded: bool = False
     ) -> OrchestratorOutput:
+        # 1) area beat — the spine that fills the gap between objects
+        if self._has_area(st) and st.area_beats < settings.area_max_beats:
+            text = await self._area_line(st, pace, intro=False)
+            if text:
+                return await self._finish(st, State.NARRATING, "narration", text)
+            st.area_beats = settings.area_max_beats  # area exhausted — stop trying
+
+        # 2) fall back to telling MORE about the last object
         if st.last_place is not None and st.elaboration_count < _MAX_ELABORATE:
             try:
                 text = await self.pipeline.elaborate(
@@ -188,8 +257,36 @@ class Orchestrator:
                     st.last_place, st.last_significance,
                 )
             st.elaboration_count = _MAX_ELABORATE  # nothing more to add — stop trying
+
         state = State.EXPANDING if expanded else State.IDLE
         return await self._finish(st, state, "silence")
+
+    # one area beat: lazily fetch area facts (once per area), then narrate.
+    # The intro stays fast (general knowledge) — facts are fetched for the first
+    # real gap-beat, so entering an area never stalls on a web search.
+    async def _area_line(self, st, pace: Pace, *, intro: bool) -> str:
+        if settings.area_enrich and not intro and st.area_facts is None:
+            facts = await self.pipeline.enrich_area(
+                st.address, st.position, timeout_s=settings.enrich_timeout_s
+            )
+            st.area_facts = facts or ""  # cache "" so we don't refetch every beat
+        try:
+            text = await self.pipeline.narrate_area(
+                st.address,
+                facts=st.area_facts or None,
+                intro=intro,
+                beat=st.area_beats,
+                last_place_name=st.last_place.name if st.last_place else None,
+                history=st.narration_history,
+                pace=pace,
+                language=st.language,
+            )
+        except Exception:
+            return ""
+        if text:
+            st.area_beats += 1
+            st.narration_history = (st.narration_history + [text])[-_HISTORY_CAP:]
+        return text
 
     # -- barge-in ----------------------------------------------------------- #
     async def on_utterance(self, session_id: str, text: str) -> OrchestratorOutput:

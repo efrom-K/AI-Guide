@@ -13,7 +13,7 @@ from pathlib import Path
 
 from app.services.agent.languages import prompt_language
 from app.services.llm.router import Role
-from app.shared.schemas import CompanionInput, NarratorInput, ScorerInput
+from app.shared.schemas import AreaInput, CompanionInput, NarratorInput, ScorerInput
 
 _PROMPTS_DIR = Path(__file__).resolve().parents[3] / "prompts"
 
@@ -38,6 +38,12 @@ def system_for(role: Role, language: str) -> str:
     """
     core = _load("core").replace("{language}", prompt_language(language))
     return f"{core}\n\n---\n\n{_load(_ROLE_FILE[role])}"
+
+
+def system_for_area(language: str) -> str:
+    """CORE(language) + the AREA block — for the gap-filling area monologue."""
+    core = _load("core").replace("{language}", prompt_language(language))
+    return f"{core}\n\n---\n\n{_load('area')}"
 
 
 def _json(obj: object) -> str:
@@ -94,6 +100,20 @@ def build_narrator_user(inp: NarratorInput) -> str:
                     inp.flags.preferences.model_dump() if inp.flags.preferences else None
                 ),
             },
+        }
+    )
+
+
+def build_area_user(inp: AreaInput) -> str:
+    return _json(
+        {
+            "ADDRESS": inp.address.model_dump(exclude_none=True),
+            "FACTS": inp.facts,
+            "INTRO": inp.intro,
+            "BEAT": inp.beat,
+            "LAST_PLACE": inp.last_place_name,
+            "HISTORY": inp.history,
+            "PACE": inp.pace.value,
         }
     )
 

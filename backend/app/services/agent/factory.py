@@ -20,6 +20,7 @@ from app.services.enrichment.enricher import (
     WikiEnricher,
 )
 from app.services.geo.discovery import Discovery
+from app.services.geo.geocoder import Geocoder, OverpassGeocoder
 from app.services.geo.providers import OverpassProvider, StaticPlaceProvider
 from app.services.state.store import StateStore, default_store
 
@@ -66,6 +67,24 @@ def _enricher() -> Enricher:
     return MockEnricher.from_json(_FIX / "facts_red_square.json")
 
 
+def _geocoder() -> Geocoder | None:
+    # Reverse geocoding only makes sense with the live geo source; the fixture
+    # demo is self-contained/offline, so it stays addressless (no network).
+    if settings.geocoder_source == "overpass" and settings.geo_source == "overpass":
+        return OverpassGeocoder()
+    return None
+
+
+def _area_llm():
+    """An LLM with web_facts() for area enrichment — only when we have a real web
+    provider (OpenRouter). None otherwise (area monologue uses general knowledge)."""
+    if settings.area_enrich and settings.agent_backend == "openai":
+        from app.services.llm.client import OpenAICompatLLM
+
+        return OpenAICompatLLM()
+    return None
+
+
 def build_orchestrator(store: StateStore | None = None) -> Orchestrator:
     scorer, narrator, companion = _roles()
     web = settings.enrichment_source == "websearch"
@@ -78,5 +97,8 @@ def build_orchestrator(store: StateStore | None = None) -> Orchestrator:
         # enriches every candidate inline (instant).
         enrich_top_k=settings.enrich_top_k if web else None,
         enrich_timeout_s=settings.enrich_timeout_s if web else None,
+        area_llm=_area_llm(),
     )
-    return Orchestrator(_discovery(), pipeline, companion, store or default_store())
+    return Orchestrator(
+        _discovery(), pipeline, companion, store or default_store(), geocoder=_geocoder()
+    )

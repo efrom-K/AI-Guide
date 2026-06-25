@@ -115,6 +115,7 @@ class NarrationContext(BaseModel):
     time_of_day: str | None = None
     city: str | None = None
     district: str | None = None
+    street: str | None = None
 
 
 class NarratorFlags(BaseModel):
@@ -134,6 +135,24 @@ class NarratorInput(BaseModel):
     context: NarrationContext = Field(default_factory=NarrationContext)
     history: list[str] = Field(default_factory=list)
     flags: NarratorFlags = Field(default_factory=NarratorFlags)
+    language: str = "ru"
+
+
+# --------------------------------------------------------------------------- #
+# role I/O — Area narrator (the "general -> specific" monologue spine)
+# --------------------------------------------------------------------------- #
+class AreaInput(BaseModel):
+    """One beat of the area-level monologue: talk about the city / district /
+    street that the walk is currently inside, to bridge the gaps between objects
+    and keep a continuous tour going."""
+
+    address: Address = Field(default_factory=Address)
+    facts: str | None = None  # verified area facts (web), may be empty
+    intro: bool = False  # first beat for this area -> a city/district opener
+    beat: int = 0  # how many area beats already told here (for variety)
+    last_place_name: str | None = None  # to weave a smooth return from the last object
+    history: list[str] = Field(default_factory=list)
+    pace: Pace = Pace.SLOW
     language: str = "ru"
 
 
@@ -174,6 +193,12 @@ class SessionState(BaseModel):
     last_significance: Significance | None = None
     elaboration_count: int = 0  # follow-ups already told about last_place
     last_candidate_fingerprint: str | None = None  # heuristic gate
+    # area-level monologue (general -> specific spine)
+    last_geo_pos: GeoPoint | None = None  # where address was last resolved (move-gated)
+    area_key: str | None = None  # district|city signature; change => new area, reset below
+    area_facts: str | None = None  # verified facts about the current area (fetched once)
+    area_intro_done: bool = False  # the city/district opener was already delivered
+    area_beats: int = 0  # area beats told in the current area (variety + bound)
     state: str = "idle"  # FSM state name
 
 

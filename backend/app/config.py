@@ -53,6 +53,15 @@ class Settings(BaseSettings):
 
     # Geo
     overpass_url: str = "https://overpass-api.de/api/interpreter"
+    # Reverse geocoding (city/district/street for the "general -> specific" monologue).
+    #   overpass -> derive admin areas + street from the Overpass endpoint above
+    #   none     -> no geocoding (guide won't name the area)
+    geocoder_source: str = "overpass"  # overpass | none
+    geocoder_min_move_m: float = 150.0  # only re-resolve the address after moving this far
+
+    # Area-level monologue (the spine that fills gaps between objects)
+    area_enrich: bool = True  # fetch verified facts about the district/city (web search)
+    area_max_beats: int = 4  # area beats per area before easing off (objects reset this)
 
     # Wiring (which implementations the orchestrator factory builds)
     agent_backend: str = "heuristic"  # heuristic | openai | anthropic

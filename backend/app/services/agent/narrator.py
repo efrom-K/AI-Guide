@@ -11,9 +11,10 @@ from __future__ import annotations
 from typing import Protocol
 
 from app.services.llm.client import LLMClient
-from app.shared.schemas import NarratorInput, Significance
+from app.services.llm.router import Role
+from app.shared.schemas import AreaInput, NarratorInput, Significance
 
-from .prompts import build_narrator_user, system_for
+from .prompts import build_area_user, build_narrator_user, system_for, system_for_area
 from .significance import role_for_significance
 
 SILENCE = "[SILENCE]"
@@ -35,6 +36,8 @@ def normalize(text: str) -> str:
 
 class Narrator(Protocol):
     async def narrate(self, inp: NarratorInput) -> str: ...
+
+    async def narrate_area(self, inp: AreaInput) -> str: ...
 
 
 class TemplateNarrator:
@@ -58,6 +61,17 @@ class TemplateNarrator:
         generic = _GENERIC.get(inp.place.category, "")
         return normalize(f"{prefix}{generic}" if generic else "")
 
+    async def narrate_area(self, inp: AreaInput) -> str:
+        # deterministic fallback: name the area if we have one, else silence
+        where = inp.address.street or inp.address.district or inp.address.city
+        if not where:
+            return ""
+        if inp.intro:
+            return normalize(f"Идём по {where}.")
+        if inp.facts:
+            return normalize(inp.facts.strip()[:220])
+        return ""
+
 
 class LLMNarrator:
     def __init__(self, llm: LLMClient) -> None:
@@ -76,6 +90,14 @@ class LLMNarrator:
         system = system_for(role, inp.language)
         user = build_narrator_user(inp)
         text = await self._llm.complete_text(role, system, user)
+        return normalize(text)
+
+    async def narrate_area(self, inp: AreaInput) -> str:
+        # the area monologue runs through the Narrator role/model (it's narration);
+        # facts may be empty -> the prompt allows safe general knowledge of the city.
+        system = system_for_area(inp.language)
+        user = build_area_user(inp)
+        text = await self._llm.complete_text(Role.NARRATOR, system, user)
         return normalize(text)
 
 
