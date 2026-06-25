@@ -103,6 +103,20 @@ class Settings(BaseSettings):
 
     # State store ("" => in-memory)
     redis_url: str = ""
+    session_ttl_s: float = 3600.0  # evict idle in-memory sessions after this (0 => never)
+    max_sessions: int = 2000  # hard LRU cap on in-memory sessions (0 => unbounded)
+
+    # --- Security & limits (protect the public /ws and cap spend) ---------------
+    # Shared access token for /ws. "" => open (dev/local). In prod set it and the
+    # client must connect with ?token=<value> (baked into the built clients).
+    ws_token: str = ""
+    max_connections_per_ip: int = 8  # concurrent WS connections per client IP (0 => off)
+    # Hard spend ceiling (USD) on cumulative process spend; 0 => off. Once reached,
+    # LLM calls are blocked (the guide degrades to silence) instead of burning money.
+    usd_hard_cap: float = 0.0
+    max_utterance_chars: int = 2000  # reject longer text/voice questions
+    max_audio_b64_chars: int = 8_000_000  # ~6 MB decoded clip ceiling (anti-DoS)
+    stats_token: str = ""  # admin token for /stats; "" => endpoint disabled
 
     # Server
     host: str = "127.0.0.1"

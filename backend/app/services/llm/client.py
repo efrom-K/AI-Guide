@@ -30,6 +30,11 @@ if not _log.handlers:  # ensure token usage prints regardless of uvicorn's confi
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
+class BudgetExceeded(RuntimeError):
+    """Raised instead of making an LLM call once the hard spend cap is hit, so the
+    guide degrades to silence rather than burning money on an open endpoint."""
+
+
 def _parse_json(text: str) -> dict[str, Any]:
     return json.loads(_FENCE.sub("", text).strip())
 
@@ -59,6 +64,11 @@ class TokenMeter:
             self.tok_in / 1e6 * settings.openai_price_in_per_mtok
             + self.tok_out / 1e6 * settings.openai_price_out_per_mtok
         )
+
+    def over_hard_cap(self) -> bool:
+        """True once cumulative process spend reaches the configured hard cap."""
+        cap = settings.usd_hard_cap
+        return cap > 0 and self.cost_usd >= cap
 
     def record(self, role: Role, model: str, usage: dict[str, Any] | None) -> None:
         usage = usage or {}
@@ -242,6 +252,12 @@ class OpenAICompatLLM:
         return {"role": "system", "content": system}
 
     async def _chat(self, role: Role, system: str, user: str, max_tokens: int, **extra) -> str:
+        if METER.over_hard_cap():
+            _log.warning(
+                "hard spend cap $%.2f reached — blocking %s call",
+                settings.usd_hard_cap, role,
+            )
+            raise BudgetExceeded(f"spend cap ${settings.usd_hard_cap:.2f} reached")
         model = self._model_for(role)
         payload: dict[str, Any] = {
             "model": model,

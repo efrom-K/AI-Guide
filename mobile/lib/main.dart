@@ -44,6 +44,8 @@ String normLang(String code) => kLangs.containsKey(code) ? code : 'en';
 // with no manual setup:  flutter build ... --dart-define=WS_URL=wss://host/ws
 // The in-app Settings field overrides it. Falls back to localhost for dev/emulator.
 const kDefaultWsUrl = String.fromEnvironment('WS_URL', defaultValue: 'ws://localhost:8000/ws');
+// Shared access token for the /ws endpoint ('' => open). Baked in at build time.
+const kWsToken = String.fromEnvironment('WS_TOKEN', defaultValue: '');
 
 // True under `flutter test` — lets us skip live map-tile network there.
 bool _underTest() {
@@ -319,7 +321,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void _connect() {
     _wantConnected = true;
     _reconnectTimer?.cancel();
-    final ch = WebSocketChannel.connect(Uri.parse(_urlCtrl.text.trim()));
+    var url = _urlCtrl.text.trim();
+    if (kWsToken.isNotEmpty) {
+      final sep = url.contains('?') ? '&' : '?';
+      url += '${sep}token=${Uri.encodeComponent(kWsToken)}';
+    }
+    final ch = WebSocketChannel.connect(Uri.parse(url));
     ch.stream.listen(
       (data) {
         _retries = 0; // a live message proves the link is healthy

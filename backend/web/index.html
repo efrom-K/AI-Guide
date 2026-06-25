@@ -85,7 +85,9 @@
   <script>
   (function () {
     // ---- WS protocol endpoint (same host, wss when the page is https) -------
-    const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+    const WS_TOKEN = '__WS_TOKEN__'; // injected by the server ('' => open endpoint)
+    const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'
+      + (WS_TOKEN ? '?token=' + encodeURIComponent(WS_TOKEN) : '');
     const TTS_LANG = { en:'en-US', ru:'ru-RU', es:'es-ES', fr:'fr-FR', de:'de-DE', it:'it-IT', pt:'pt-BR', zh:'zh-CN' };
 
     // ---- demo route: the real Moscow walk (interpolated) --------------------

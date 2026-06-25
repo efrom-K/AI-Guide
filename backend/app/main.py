@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
+from app.config import settings
 from app.services.agent.factory import build_orchestrator
 from app.services.agent.languages import normalize
 from app.services.agent.orchestrator import Orchestrator, OrchestratorOutput, merge_patch
@@ -76,7 +77,10 @@ async def health() -> dict[str, str]:
 @app.get("/")
 async def index() -> HTMLResponse:
     if _WEB_INDEX.exists():
-        return HTMLResponse(_WEB_INDEX.read_text(encoding="utf-8"))
+        # bake the /ws access token into the served page so the browser client
+        # authenticates automatically (empty in dev => open).
+        html = _WEB_INDEX.read_text(encoding="utf-8").replace("__WS_TOKEN__", settings.ws_token)
+        return HTMLResponse(html)
     return HTMLResponse("<h1>AI Audio Guide backend</h1><p>See /health</p>")
 
 
@@ -189,8 +193,38 @@ class _SessionRuntime:
             self.resume.set()  # let the producer continue
 
 
+# process-wide count of concurrent WS connections per client IP (simple abuse guard)
+_ip_conns: dict[str, int] = {}
+
+
+def _client_ip(websocket: WebSocket) -> str:
+    # behind Caddy the real IP is in X-Forwarded-For; fall back to the socket peer
+    xff = websocket.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return websocket.client.host if websocket.client else "?"
+
+
+def _too_big(msg: dict, kind: str) -> bool:
+    if kind == "utterance":
+        return len(str(msg.get("text", ""))) > settings.max_utterance_chars
+    if kind == "audio":
+        return len(str(msg.get("data_b64", ""))) > settings.max_audio_b64_chars
+    return False
+
+
 @app.websocket("/ws")
 async def ws(websocket: WebSocket) -> None:
+    # --- gate the open endpoint BEFORE accepting (token + per-IP limit) -------
+    if settings.ws_token and websocket.query_params.get("token", "") != settings.ws_token:
+        await websocket.close(code=1008)  # policy violation
+        return
+    ip = _client_ip(websocket)
+    if settings.max_connections_per_ip and _ip_conns.get(ip, 0) >= settings.max_connections_per_ip:
+        await websocket.close(code=1008)
+        return
+    _ip_conns[ip] = _ip_conns.get(ip, 0) + 1
+
     await websocket.accept()
     orch = get_orchestrator()
     rt = _SessionRuntime(websocket, orch, uuid.uuid4().hex)
@@ -199,6 +233,9 @@ async def ws(websocket: WebSocket) -> None:
         while True:
             msg = await websocket.receive_json()
             kind = msg.get("type")
+            if _too_big(msg, kind):
+                await rt.send_json({"type": "error", "message": "message too large"})
+                continue
             if kind == "position":
                 p = WSPositionUpdate.model_validate(msg)
                 rt.live_position = GeoPoint(lat=p.lat, lon=p.lon)
@@ -232,6 +269,11 @@ async def ws(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        n = _ip_conns.get(ip, 0) - 1
+        if n > 0:
+            _ip_conns[ip] = n
+        else:
+            _ip_conns.pop(ip, None)
         producer.cancel()
         if rt.step_task is not None:
             rt.step_task.cancel()
