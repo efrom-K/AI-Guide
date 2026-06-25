@@ -12,7 +12,17 @@ from app.services.geo.discovery import Discovery
 from app.services.geo.geocoder import MockGeocoder, parse_address
 from app.services.geo.providers import StaticPlaceProvider
 from app.services.state.store import InMemoryStateStore
-from app.shared.schemas import Address, AreaInput, GeoPoint, Heading, NarratorInput, Pace, Place
+from app.shared.schemas import (
+    Address,
+    AreaInput,
+    GeoPoint,
+    Heading,
+    NarratorInput,
+    Pace,
+    Place,
+    PlannerInput,
+    PlannerOutput,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -59,7 +69,7 @@ def test_parse_prefers_localized_name_and_empty():
 
 
 # --------------------------------------------------------------------------- #
-# Area monologue flow — general -> specific
+# Story-arc flow — opener -> woven object -> outline-advancing area beats
 # --------------------------------------------------------------------------- #
 class ScriptNarrator:
     """Narrator that returns tagged text so the flow is observable."""
@@ -68,12 +78,24 @@ class ScriptNarrator:
         return f"OBJECT:{inp.place.name}"
 
     async def narrate_area(self, inp: AreaInput) -> str:
-        kind = "INTRO" if inp.intro else "BEAT"
-        return f"AREA:{kind}:{inp.address.district or inp.address.city}"
+        return f"AREA:{inp.topic}"
+
+
+class ScriptPlanner:
+    """Planner returning a fixed arc so the flow is deterministic."""
+
+    async def plan(self, inp: PlannerInput) -> PlannerOutput:
+        return PlannerOutput(
+            theme="ремёсла Таганки",
+            outline=["слобода", "улицы", "люди"],
+            opener=f"OPENER:{inp.address.district}",
+        )
 
 
 def _orch(places) -> Orchestrator:
-    pipeline = TextPipeline(HeuristicScorer(), ScriptNarrator(), MockEnricher({}))
+    pipeline = TextPipeline(
+        HeuristicScorer(), ScriptNarrator(), MockEnricher({}), planner=ScriptPlanner()
+    )
     geocoder = MockGeocoder(Address(country="Россия", city="Москва", district="Таганский район"))
     return Orchestrator(
         Discovery(StaticPlaceProvider(places)),
@@ -84,7 +106,7 @@ def _orch(places) -> Orchestrator:
     )
 
 
-def test_area_intro_precedes_objects_then_beats_fill_gaps():
+def test_arc_opener_then_woven_object_then_outline_beats_no_repeats():
     place = Place(
         id="node/1", name="Дом Музы", category="historic",
         location=GeoPoint(lat=55.7415, lon=37.6539),
@@ -100,9 +122,24 @@ def test_area_intro_precedes_objects_then_beats_fill_gaps():
         return outs
 
     outs = asyncio.run(run())
-    # 1st line is the area intro (general), BEFORE any object (specific).
-    assert outs[0] == "AREA:INTRO:Таганский район"
-    # the object is narrated once it is reached.
+    # 1st line is the arc opener (formed by the planner), before any object.
+    assert outs[0] == "OPENER:Таганский район"
+    # the nearby object is woven in once reached.
     assert "OBJECT:Дом Музы" in outs
-    # gaps after the object are filled with area beats, not silence.
-    assert any(o == "AREA:BEAT:Таганский район" for o in outs[2:])
+    # gaps are filled by advancing the outline, each topic once (no repeats).
+    beats = [o for o in outs if o.startswith("AREA:")]
+    assert "AREA:слобода" in beats
+    assert len(beats) == len(set(beats))  # outline topics never repeat
+
+
+def test_user_question_is_queued_to_weave_into_narration():
+    async def run():
+        orch = _orch([])
+        # establish an area first
+        await orch.on_position("s2", GeoPoint(lat=55.7415, lon=37.6539), Heading(), Pace.SLOW)
+        await orch.on_utterance("s2", "А кто такой Высоцкий?")
+        st = await orch.store.load("s2")
+        return st.narrative_plan.pending_focus
+
+    pending = asyncio.run(run())
+    assert "А кто такой Высоцкий?" in pending  # queued as a focus topic to weave next

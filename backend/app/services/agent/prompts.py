@@ -13,7 +13,13 @@ from pathlib import Path
 
 from app.services.agent.languages import prompt_language
 from app.services.llm.router import Role
-from app.shared.schemas import AreaInput, CompanionInput, NarratorInput, ScorerInput
+from app.shared.schemas import (
+    AreaInput,
+    CompanionInput,
+    NarratorInput,
+    PlannerInput,
+    ScorerInput,
+)
 
 _PROMPTS_DIR = Path(__file__).resolve().parents[3] / "prompts"
 
@@ -44,6 +50,12 @@ def system_for_area(language: str) -> str:
     """CORE(language) + the AREA block — for the gap-filling area monologue."""
     core = _load("core").replace("{language}", prompt_language(language))
     return f"{core}\n\n---\n\n{_load('area')}"
+
+
+def system_for_planner(language: str) -> str:
+    """CORE(language) + the PLANNER block — forms the area story arc."""
+    core = _load("core").replace("{language}", prompt_language(language))
+    return f"{core}\n\n---\n\n{_load('planner')}"
 
 
 def _json(obj: object) -> str:
@@ -91,6 +103,9 @@ def build_narrator_user(inp: NarratorInput) -> str:
             },
             "PACE": inp.pace.value,
             "CONTEXT": inp.context.model_dump(exclude_none=True),
+            "THEME": inp.theme,
+            "TOLD": inp.told,
+            "NEXT_HOOK": inp.next_hook,
             "HISTORY": inp.history,
             "FLAGS": {
                 "switching": inp.flags.switching,
@@ -109,11 +124,23 @@ def build_area_user(inp: AreaInput) -> str:
         {
             "ADDRESS": inp.address.model_dump(exclude_none=True),
             "FACTS": inp.facts,
-            "INTRO": inp.intro,
-            "BEAT": inp.beat,
+            "THEME": inp.theme,
+            "TOPIC": inp.topic,
+            "TOLD": inp.told,
+            "NEXT_HOOK": inp.next_hook,
             "LAST_PLACE": inp.last_place_name,
             "HISTORY": inp.history,
             "PACE": inp.pace.value,
+        }
+    )
+
+
+def build_planner_user(inp: PlannerInput) -> str:
+    return _json(
+        {
+            "ADDRESS": inp.address.model_dump(exclude_none=True),
+            "FACTS": inp.facts,
+            "THEME_OVERRIDE": inp.theme_override,
         }
     )
 

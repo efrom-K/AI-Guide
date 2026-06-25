@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import uuid
 from pathlib import Path
@@ -48,6 +49,20 @@ def get_stt() -> STTClient:
     if _stt is None:
         _stt = build_stt()
     return _stt
+
+
+@app.on_event("startup")
+async def _warm_stt() -> None:
+    """Preload the STT model off the request path so the first voice question
+    doesn't pay the (one-time) model-load cost. Done in a thread; non-fatal."""
+
+    async def _load() -> None:
+        try:
+            await asyncio.to_thread(get_stt)
+        except Exception:  # noqa: BLE001 — warming is best-effort
+            pass
+
+    asyncio.create_task(_load())
 
 
 @app.get("/health")

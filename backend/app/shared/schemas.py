@@ -135,6 +135,10 @@ class NarratorInput(BaseModel):
     context: NarrationContext = Field(default_factory=NarrationContext)
     history: list[str] = Field(default_factory=list)
     flags: NarratorFlags = Field(default_factory=NarratorFlags)
+    # narrative arc — so the object is woven INTO the running story, not dropped in
+    theme: str | None = None  # the through-line to keep the object inside
+    told: list[str] = Field(default_factory=list)  # topics/places already covered (don't repeat)
+    next_hook: str | None = None  # the transition the previous paragraph set up
     language: str = "ru"
 
 
@@ -142,18 +146,35 @@ class NarratorInput(BaseModel):
 # role I/O — Area narrator (the "general -> specific" monologue spine)
 # --------------------------------------------------------------------------- #
 class AreaInput(BaseModel):
-    """One beat of the area-level monologue: talk about the city / district /
-    street that the walk is currently inside, to bridge the gaps between objects
-    and keep a continuous tour going."""
+    """One beat of the area-level monologue: advance the story arc about the
+    city / district / street, bridging the gaps between objects."""
 
     address: Address = Field(default_factory=Address)
     facts: str | None = None  # verified area facts (web), may be empty
-    intro: bool = False  # first beat for this area -> a city/district opener
-    beat: int = 0  # how many area beats already told here (for variety)
+    theme: str | None = None  # the through-line for this area
+    topic: str | None = None  # the specific outline topic this beat should cover
+    told: list[str] = Field(default_factory=list)  # covered topics/places (don't repeat)
+    next_hook: str | None = None  # transition the previous paragraph set up
     last_place_name: str | None = None  # to weave a smooth return from the last object
     history: list[str] = Field(default_factory=list)
     pace: Pace = Pace.SLOW
     language: str = "ru"
+
+
+# --------------------------------------------------------------------------- #
+# role I/O — Planner (forms the story arc for a freshly entered area)
+# --------------------------------------------------------------------------- #
+class PlannerInput(BaseModel):
+    address: Address = Field(default_factory=Address)
+    facts: str | None = None  # verified area facts, if already fetched
+    theme_override: str | None = None  # a topic the user explicitly asked for
+    language: str = "ru"
+
+
+class PlannerOutput(BaseModel):
+    theme: str = ""  # the through-line for this area (one phrase)
+    outline: list[str] = Field(default_factory=list)  # 3-5 ordered topics to cover
+    opener: str = ""  # the spoken opening paragraph (introduces area + theme)
 
 
 # --------------------------------------------------------------------------- #
@@ -171,6 +192,30 @@ class CompanionInput(BaseModel):
 class CompanionOutput(BaseModel):
     reply: str
     control_patch: ControlPatch | None = None
+
+
+# --------------------------------------------------------------------------- #
+# narrative plan (the story arc formed at session/area start, augmented en route)
+# --------------------------------------------------------------------------- #
+class NarrativePlan(BaseModel):
+    area_key: str | None = None  # which area this plan was built for
+    theme: str = ""  # the auto-chosen through-line for this area
+    theme_override: str | None = None  # a topic the user picked (wins over `theme`)
+    outline: list[str] = Field(default_factory=list)  # ordered topics to cover
+    told: list[str] = Field(default_factory=list)  # covered topics/place-names (dedup)
+    pending_focus: list[str] = Field(default_factory=list)  # user-asked topics to weave next
+    next_hook: str | None = None  # transition note to the next paragraph
+
+    def active_theme(self) -> str:
+        return self.theme_override or self.theme
+
+    def next_topic(self) -> str | None:
+        """The first outline topic not yet covered (case-insensitive)."""
+        told_lc = {t.lower() for t in self.told}
+        for topic in self.outline:
+            if topic.lower() not in told_lc:
+                return topic
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -197,8 +242,10 @@ class SessionState(BaseModel):
     last_geo_pos: GeoPoint | None = None  # where address was last resolved (move-gated)
     area_key: str | None = None  # district|city signature; change => new area, reset below
     area_facts: str | None = None  # verified facts about the current area (fetched once)
-    area_intro_done: bool = False  # the city/district opener was already delivered
+    area_intro_done: bool = False  # the area opener (+ plan) was already delivered
     area_beats: int = 0  # area beats told in the current area (variety + bound)
+    # the story arc — formed when an area is entered, augmented along the route
+    narrative_plan: NarrativePlan = Field(default_factory=NarrativePlan)
     state: str = "idle"  # FSM state name
 
 

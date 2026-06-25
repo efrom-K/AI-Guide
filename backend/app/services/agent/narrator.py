@@ -62,14 +62,14 @@ class TemplateNarrator:
         return normalize(f"{prefix}{generic}" if generic else "")
 
     async def narrate_area(self, inp: AreaInput) -> str:
-        # deterministic fallback: name the area if we have one, else silence
-        where = inp.address.street or inp.address.district or inp.address.city
+        # deterministic fallback: name the area / use facts, else silence
+        where = inp.address.district or inp.address.city or inp.address.street
         if not where:
             return ""
-        if inp.intro:
-            return normalize(f"Идём по {where}.")
         if inp.facts:
             return normalize(inp.facts.strip()[:220])
+        if inp.topic:
+            return normalize(f"А сам {where} — это про {inp.topic}.")
         return ""
 
 

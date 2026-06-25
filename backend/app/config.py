@@ -92,6 +92,14 @@ class Settings(BaseSettings):
     default_language: str = "ru"
     default_radius_m: float = 80.0
     max_radius_m: float = 500.0
+    # An object is only narrated as "right here" if it's within this radius. The
+    # discovery radius may expand wider to find context for the area monologue,
+    # but objects beyond weave_radius_m are NOT narrated as nearby (fixes the
+    # "guide talks about places that are too far away" complaint).
+    weave_radius_m: float = 120.0
+    # Cap how many (nearest) candidates are considered per tick — bounds the
+    # Scorer's input/output size (its JSON grows linearly with candidate count).
+    scorer_max_candidates: int = 6
 
     # State store ("" => in-memory)
     redis_url: str = ""

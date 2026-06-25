@@ -28,13 +28,13 @@ from app.shared.schemas import (
     NarratorInput,
     Pace,
     Place,
-    ScorerInput,
     ScorerOutput,
     Significance,
 )
 
 from .narrator import Narrator
 from .scorer import Scorer
+from .significance import significance_from_weight
 
 
 @dataclass
@@ -72,6 +72,7 @@ class TextPipeline:
         enrich_top_k: int | None = None,
         enrich_timeout_s: float | None = None,
         area_llm=None,  # an LLM with web_facts() for area enrichment (optional)
+        planner=None,  # a Planner that forms the story arc (optional)
     ) -> None:
         self.scorer = scorer
         self.narrator = narrator
@@ -81,6 +82,7 @@ class TextPipeline:
         self.enrich_top_k = enrich_top_k
         self.enrich_timeout_s = enrich_timeout_s
         self.area_llm = area_llm
+        self.planner = planner
 
     async def step(
         self,
@@ -94,7 +96,17 @@ class TextPipeline:
         preferences: ControlPatch | None = None,
         switching: bool = False,
         language: str | None = None,
+        theme: str | None = None,
+        told: list[str] | None = None,
+        next_hook: str | None = None,
     ) -> StepResult:
+        """Narrate the nearest weave-worthy object, woven INTO the story arc.
+
+        The expensive per-tick LLM Scorer is gone: candidates arrive already
+        proximity-gated and ranked, so selection is deterministic (nearest unseen,
+        honoring skip-categories) and significance is a cheap heuristic. The arc
+        (theme / told / next_hook) keeps the object inside the running story.
+        """
         lang = language or self.language
         addr = address or Address()
         ctx = ", ".join(p for p in (addr.city, addr.country) if p) or None
@@ -108,23 +120,15 @@ class TextPipeline:
         )
         enriched = attach_facts(candidates, self.cache)
 
-        decision = await self.scorer.score(
-            ScorerInput(
-                candidates=enriched,
-                address=address or Address(),
-                seen=seen,
-                preferences=preferences,
-                language=lang,
-            )
+        seen_set = set(seen)
+        skip = set(preferences.skip_categories) if preferences else set()
+        chosen = next(
+            (c for c in enriched if c.place.id not in seen_set and c.place.category not in skip),
+            None,
         )
-        if decision.next is None:
-            return StepResult("", decision, None, None)
-
-        chosen = next(c for c in enriched if c.place.id == decision.next)
-        sig = next(
-            (s.significance for s in decision.scored if s.place_id == decision.next),
-            Significance.MEDIUM,
-        )
+        if chosen is None:
+            return StepResult("", ScorerOutput(), None, None)
+        sig = significance_from_weight(chosen.type_weight, chosen.facts_available)
         text = await self.narrator.narrate(
             NarratorInput(
                 place=chosen.place,
@@ -134,6 +138,9 @@ class TextPipeline:
                 heading=heading or Heading(),
                 pace=pace,
                 context=_context(addr),
+                theme=theme,
+                told=told or [],
+                next_hook=next_hook,
                 history=history,
                 flags=NarratorFlags(
                     switching=switching,
@@ -143,7 +150,7 @@ class TextPipeline:
                 language=lang,
             )
         )
-        return StepResult(text, decision, chosen.place, sig)
+        return StepResult(text, ScorerOutput(), chosen.place, sig)
 
     async def elaborate(
         self,
@@ -193,24 +200,45 @@ class TextPipeline:
         address: Address,
         *,
         facts: str | None,
-        intro: bool,
-        beat: int,
+        theme: str | None,
+        topic: str | None,
+        told: list[str],
+        next_hook: str | None,
         last_place_name: str | None,
         history: list[str],
         pace: Pace = Pace.SLOW,
         language: str | None = None,
     ) -> str:
-        """One beat of the area-level monologue (city/district/street) — the spine
-        that bridges gaps between objects. Returns "" for silence."""
+        """One beat of the area-level monologue — advance the story arc by one
+        topic, staying inside the theme. Returns "" for silence."""
         return await self.narrator.narrate_area(
             AreaInput(
                 address=address,
                 facts=facts,
-                intro=intro,
-                beat=beat,
+                theme=theme,
+                topic=topic,
+                told=told,
+                next_hook=next_hook,
                 last_place_name=last_place_name,
                 history=history,
                 pace=pace,
+                language=language or self.language,
+            )
+        )
+
+    async def make_plan(
+        self, address: Address, *, facts: str | None, theme_override: str | None, language: str | None = None
+    ):
+        """Form the story arc (theme + outline + opener) for a freshly entered area."""
+        from app.shared.schemas import PlannerInput
+
+        if self.planner is None:
+            return None
+        return await self.planner.plan(
+            PlannerInput(
+                address=address,
+                facts=facts,
+                theme_override=theme_override,
                 language=language or self.language,
             )
         )

@@ -11,6 +11,7 @@ from app.services.agent.companion import Companion, HeuristicCompanion, LLMCompa
 from app.services.agent.narrator import LLMNarrator, Narrator, TemplateNarrator
 from app.services.agent.orchestrator import Orchestrator
 from app.services.agent.pipeline import TextPipeline
+from app.services.agent.planner import HeuristicPlanner, LLMPlanner, Planner
 from app.services.agent.scorer import HeuristicScorer, LLMScorer, Scorer
 from app.services.enrichment.enricher import (
     CompositeEnricher,
@@ -85,6 +86,21 @@ def _area_llm():
     return None
 
 
+def _planner() -> Planner:
+    """Forms the per-area story arc. LLM-backed in production; deterministic
+    (names the area + generic outline) for the offline/heuristic path."""
+    backend = settings.agent_backend
+    if backend == "openai":
+        from app.services.llm.client import OpenAICompatLLM
+
+        return LLMPlanner(OpenAICompatLLM())
+    if backend == "anthropic":
+        from app.services.llm.client import AnthropicLLM
+
+        return LLMPlanner(AnthropicLLM())
+    return HeuristicPlanner()
+
+
 def build_orchestrator(store: StateStore | None = None) -> Orchestrator:
     scorer, narrator, companion = _roles()
     web = settings.enrichment_source == "websearch"
@@ -98,6 +114,7 @@ def build_orchestrator(store: StateStore | None = None) -> Orchestrator:
         enrich_top_k=settings.enrich_top_k if web else None,
         enrich_timeout_s=settings.enrich_timeout_s if web else None,
         area_llm=_area_llm(),
+        planner=_planner(),
     )
     return Orchestrator(
         _discovery(), pipeline, companion, store or default_store(), geocoder=_geocoder()
