@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import logging
 import uuid
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from app.shared.schemas import (
 )
 
 app = FastAPI(title="AI Audio Guide", version="0.1.0")
+_log = logging.getLogger("aiguide.ws")
 
 _WEB_INDEX = Path(__file__).resolve().parent.parent / "web" / "index.html"
 _orchestrator: Orchestrator | None = None
@@ -145,7 +147,10 @@ class _SessionRuntime:
                     self.barging = False
                     await self.resume.wait()
                     continue
-                raise
+                raise  # genuine shutdown -> let the producer exit
+            except Exception as e:  # noqa: BLE001 — a bad step must NOT kill the producer
+                _log.warning("producer step failed (%s): %s", self.session_id, e)
+                await asyncio.sleep(2)  # throttle so a persistent failure can't hot-loop
             finally:
                 self.step_task = None
 
@@ -189,8 +194,12 @@ class _SessionRuntime:
                 text = WSUserUtterance.model_validate(msg).text
             out = await self.orch.on_utterance(self.session_id, text)
             await self.send_out(out)
+        except Exception as e:  # noqa: BLE001 — a failed question must not drop the session
+            _log.warning("question handling failed (%s): %s", self.session_id, e)
+            with contextlib.suppress(Exception):
+                await self.send_json({"type": "error", "message": "не расслышал, попробуй ещё раз"})
         finally:
-            self.resume.set()  # let the producer continue
+            self.resume.set()  # let the producer continue regardless
 
 
 # process-wide count of concurrent WS connections per client IP (simple abuse guard)
@@ -279,3 +288,5 @@ async def ws(websocket: WebSocket) -> None:
             rt.step_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await producer
+        with contextlib.suppress(Exception):
+            await orch.store.delete(rt.session_id)  # free the session promptly

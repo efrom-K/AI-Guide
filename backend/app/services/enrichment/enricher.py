@@ -19,6 +19,15 @@ from app.shared.schemas import Candidate, Place
 
 _log = logging.getLogger("aiguide.enrich")
 
+_CACHE_CAP = 5000  # per-cache entry ceiling so facts dicts can't grow unbounded
+
+
+def _bounded_set(cache: dict, key, value, cap: int = _CACHE_CAP) -> None:
+    """Insert into a dict with a FIFO size cap (drop the oldest entry when full)."""
+    if key not in cache and len(cache) >= cap:
+        cache.pop(next(iter(cache)), None)
+    cache[key] = value
+
 
 class Enricher(Protocol):
     async def facts_for(self, place: Place, context: str | None = None) -> str | None: ...
@@ -32,7 +41,7 @@ class EnrichmentCache:
         return self._cache.get(place_id)
 
     def put(self, place_id: str, facts: str) -> None:
-        self._cache[place_id] = facts
+        _bounded_set(self._cache, place_id, facts)
 
     def __contains__(self, place_id: str) -> bool:
         return place_id in self._cache
@@ -129,7 +138,7 @@ class WebSearchEnricher:
         except Exception as e:  # network/provider hiccup — degrade to no facts
             _log.warning("enrich failed for %s: %s", place.id, e)
             return None  # transient: don't cache, retry on a later tick
-        self._cache[place.id] = facts
+        _bounded_set(self._cache, place.id, facts)
         self._persist()
         return facts
 
@@ -174,7 +183,7 @@ class WikiEnricher:
         except Exception as e:  # transient network/parse — don't cache, retry later
             _log.warning("wiki enrich failed for %s: %s", place.id, e)
             return None
-        self._cache[place.id] = facts
+        _bounded_set(self._cache, place.id, facts)
         return facts
 
     async def _summary(self, client: httpx.AsyncClient, lang: str, title: str) -> str | None:

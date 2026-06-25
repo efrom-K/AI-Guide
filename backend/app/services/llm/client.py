@@ -10,10 +10,13 @@ API key; real narration quality is exercised with a key via ``AnthropicLLM``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from typing import Any, Protocol
+
+import httpx
 
 from app.config import settings
 
@@ -197,12 +200,10 @@ class OpenAICompatLLM:
         api_key: str | None = None,
         default_model: str | None = None,
     ) -> None:
-        import httpx
-
         self._url = (base_url or settings.openai_base_url).rstrip("/") + "/chat/completions"
         self._default = default_model or settings.openai_model
         self._client = httpx.AsyncClient(
-            timeout=90.0,
+            timeout=45.0,
             headers={
                 "Authorization": f"Bearer {api_key or settings.openai_api_key}",
                 "X-Title": "AI Audio Guide",
@@ -274,11 +275,28 @@ class OpenAICompatLLM:
         if settings.openai_prompt_cache:
             # ask OpenRouter to return cost + cached-token accounting in usage
             payload["usage"] = {"include": True}
-        resp = await self._client.post(self._url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+        data = await self._post_with_retry(payload, role)
         METER.record(role, model, data.get("usage"))
         return data["choices"][0]["message"]["content"].strip()
+
+    async def _post_with_retry(self, payload: dict, role: Role) -> dict:
+        """POST with one retry on a transient failure (timeout / 5xx). 4xx (e.g. a
+        region block or bad request) is not retried — that just wastes a call."""
+        for attempt in range(2):
+            try:
+                resp = await self._client.post(self._url, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                if attempt == 1:
+                    raise
+                _log.warning("LLM %s transient error, retrying: %s", role, e)
+            except httpx.HTTPStatusError as e:
+                if attempt == 1 or e.response.status_code < 500:
+                    raise  # 4xx won't get better on retry
+                _log.warning("LLM %s %s, retrying", role, e.response.status_code)
+            await asyncio.sleep(0.6 * (attempt + 1))
+        raise RuntimeError("unreachable")
 
     async def complete_text(
         self, role: Role, system: str, user: str, *, max_tokens: int = 1024

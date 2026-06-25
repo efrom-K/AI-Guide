@@ -38,6 +38,8 @@ from app.shared.schemas import (
 )
 
 _HISTORY_CAP = 12
+_SEEN_CAP = 600  # cap the dedup list so a long walk can't grow session state unbounded
+_TOLD_CAP = 80  # cap the arc's covered-topics ledger
 _CONVO_CAP = 20
 # Follow-ups per place when nothing new is nearby. High on purpose: while the area
 # is empty the guide keeps adding to the current place's story until the Narrator
@@ -175,12 +177,12 @@ class Orchestrator:
 
         if out.text and out.place:
             st.narration_history = (st.narration_history + [out.text])[-_HISTORY_CAP:]
-            st.seen_place_ids.append(out.place.id)
+            st.seen_place_ids = (st.seen_place_ids + [out.place.id])[-_SEEN_CAP:]
             st.last_place_id = out.place.id
             st.last_place = out.place
             st.last_significance = out.significance
             st.elaboration_count = 0  # fresh place — allow follow-ups again
-            plan.told.append(out.place.name)  # record in the arc ledger (anti-repeat)
+            plan.told = (plan.told + [out.place.name])[-_TOLD_CAP:]  # arc ledger (anti-repeat)
             plan.next_hook = None
             state = State.SWITCHING if switching else State.NARRATING
             return await self._finish(
@@ -250,7 +252,7 @@ class Orchestrator:
         opener = (draft.opener or "").strip()
         if not opener:
             return None
-        plan.told.append("вступление в район")
+        plan.told = (plan.told + ["вступление в район"])[-_TOLD_CAP:]
         st.narration_history = (st.narration_history + [opener])[-_HISTORY_CAP:]
         return await self._finish(st, State.NARRATING, "narration", opener)
 
@@ -323,7 +325,7 @@ class Orchestrator:
         if text:
             if focus:
                 plan.pending_focus.pop(0)  # answered/woven this user topic
-            plan.told.append(topic)
+            plan.told = (plan.told + [topic])[-_TOLD_CAP:]
             plan.next_hook = None
             st.narration_history = (st.narration_history + [text])[-_HISTORY_CAP:]
         return text
