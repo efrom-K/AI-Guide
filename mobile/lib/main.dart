@@ -119,6 +119,24 @@ class PlaceMark {
   PlaceMark(this.id, this.point, this.name, this.text);
 }
 
+// One queued utterance for the TTS. Narration paragraphs signal `played` to the
+// server (to pace the continuous story); replies don't.
+class _Speech {
+  final String text;
+  final bool isNarration;
+  _Speech(this.text, this.isNarration);
+}
+
+// Tour themes the user can switch to ("" = let the guide choose automatically).
+const List<({String code, String label})> kThemes = [
+  (code: '', label: '🎲 Авто'),
+  (code: 'история', label: '🏛 История'),
+  (code: 'архитектура', label: '🏗 Архитектура'),
+  (code: 'люди и судьбы', label: '👤 Люди'),
+  (code: 'культура и искусство', label: '🎭 Культура'),
+  (code: 'легенды и тайны', label: '🕯 Легенды'),
+];
+
 // Demo route: a real Moscow walk, waypoints joined in order (straight segments).
 const List<List<double>> kRoute = [
   [55.725789, 37.685192],
@@ -159,7 +177,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   // On-device TTS — the guide speaks the narration aloud.
   final FlutterTts _tts = FlutterTts();
   bool _voice = true; // speaker on/off
-  String? _pending; // newest narration waiting its turn (we never cut a line mid-sentence)
+  final List<_Speech> _speakQueue = []; // paragraphs/replies awaiting TTS (in order)
+  bool _curIsNarration = false; // is the utterance now playing a narration?
+  String _theme = ''; // current tour theme code ("" = auto)
   late String _lang; // current guide language code (en|ru|es|…)
 
   // Microphone — ask the guide by voice (barge-in).
@@ -203,27 +223,37 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     await _tts.setSpeechRate(0.5); // calmer, guide-like pace
     await _tts.setPitch(1.0);
     await _tts.awaitSpeakCompletion(true);
-    _tts.setStartHandler(() => setState(() => _speaking = true));
+    _tts.setStartHandler(() {
+      setState(() => _speaking = true);
+      // Pipeline: as soon as a paragraph starts playing, tell the server so it
+      // prepares the next one — the continuous story stays one step ahead, no gaps.
+      if (_curIsNarration) _send({'type': 'played'});
+    });
     _tts.setCompletionHandler(() {
       setState(() => _speaking = false);
-      // The line finished; if newer narration arrived meanwhile, speak the latest.
-      final next = _pending;
-      _pending = null;
-      if (next != null && _voice) _speakNarration(next);
+      _speakNext(); // play the next queued paragraph (usually already arrived)
     });
     _tts.setCancelHandler(() => setState(() => _speaking = false));
   }
 
-  // Speak narration without cutting an in-progress line: queue only the newest
-  // (drop stale middles) so the story stays coherent and still fresh.
-  Future<void> _speakNarration(String text) async {
-    if (!_voice) return;
-    if (_speaking) {
-      _pending = text;
+  // Queue a paragraph/reply for TTS (never cut a line mid-sentence). Narration
+  // paragraphs are paced by the server via the `played` signal; with the voice
+  // muted we still ack narration so the story keeps flowing on screen.
+  void _enqueueSpeech(String text, {required bool isNarration}) {
+    if (!_voice) {
+      if (isNarration) _send({'type': 'played'});
       return;
     }
+    _speakQueue.add(_Speech(text, isNarration));
+    if (!_speaking) _speakNext();
+  }
+
+  Future<void> _speakNext() async {
+    if (_speaking || _speakQueue.isEmpty) return;
+    final s = _speakQueue.removeAt(0);
+    _curIsNarration = s.isNarration;
     setState(() => _speaking = true); // claim synchronously to avoid overlap
-    await _tts.speak(text);
+    await _tts.speak(s.text);
   }
 
   // Point the TTS voice at the given language (best-effort; unknown tags are no-ops).
@@ -248,12 +278,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
   }
 
-  // Speak now, cutting off whatever is playing (used for replies / barge-in answers).
-  Future<void> _say(String text) async {
-    if (!_voice) return;
-    _pending = null;
+  // Hush whatever is playing and drop the queue (barge-in: the user is talking).
+  Future<void> _hush() async {
+    _speakQueue.clear();
     await _tts.stop();
-    await _tts.speak(text);
   }
 
   void _add(String kind, String text) {
@@ -309,7 +337,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               _curIsReply = false;
             });
             _add('guide', t);
-            _speakNarration(t); // don't cut the current line mid-sentence
+            _enqueueSpeech(t, isNarration: true); // queued; paced by `played`
             break;
           case 'reply':
             final t = m['text'] as String;
@@ -318,7 +346,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               _curIsReply = true;
             });
             _add('reply', t);
-            _say(t);
+            _enqueueSpeech(t, isNarration: false); // answer; doesn't pace the story
             break;
           case 'transcript':
             _add('you', m['text'] as String);
@@ -338,8 +366,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _add('meta', AppLocalizations.of(context)!.metaConnecting(_urlCtrl.text));
     });
     // New WS connection => fresh backend session; (re)send the language first so
-    // narration + STT use it before any position/audio arrives.
+    // narration + STT use it before any position/audio arrives, then the theme.
     _send({'type': 'language', 'language': _lang});
+    if (_theme.isNotEmpty) _send({'type': 'theme', 'theme': _theme});
   }
 
   // Socket dropped: reflect it, and auto-reconnect if the user still wants to be on.
@@ -358,8 +387,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _wantConnected = false;
     _reconnectTimer?.cancel();
     _stopWalk();
-    _pending = null;
-    _tts.stop();
+    _hush();
     _ch?.sink.close();
     setState(() {
       _ch = null;
@@ -503,8 +531,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void _ask() {
     final t = _askCtrl.text.trim();
     if (t.isEmpty || _ch == null) return;
-    _pending = null;
-    _tts.stop(); // barge-in: hush the narration while we ask
+    _hush(); // barge-in: hush the narration while we ask
     _add('you', t);
     _send({'type': 'utterance', 'text': t});
     _askCtrl.clear();
@@ -512,10 +539,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   void _toggleVoice() {
     setState(() => _voice = !_voice);
-    if (!_voice) {
-      _pending = null;
-      _tts.stop();
-    }
+    if (!_voice) _hush();
+  }
+
+  // User picked a tour theme: tell the backend to revolve the story around it.
+  void _setTheme(String code) {
+    setState(() => _theme = code);
+    if (_connected) _send({'type': 'theme', 'theme': code});
   }
 
   // ---- voice barge-in (mic) ---------------------------------------------
@@ -534,8 +564,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _add('meta', l.metaMicNoPermission);
       return;
     }
-    _pending = null;
-    _tts.stop(); // barge-in: hush the guide while the user speaks
+    _hush(); // barge-in: hush the guide while the user speaks
     final dir = await getTemporaryDirectory();
     final path = '${dir.path}/ask.wav';
     await _rec.start(
@@ -761,6 +790,21 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           itemBuilder: (_) => [
             for (final e in kLangs.entries)
               PopupMenuItem(value: e.key, child: Text('${e.value.label}  ${e.key}')),
+          ],
+        ),
+      ),
+      const SizedBox(width: 8),
+      Material(
+        color: _pillBg,
+        shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+        child: PopupMenuButton<String>(
+          tooltip: 'Тема рассказа',
+          icon: const Icon(Icons.auto_stories_rounded, size: 20, color: Colors.white70),
+          initialValue: _theme,
+          onSelected: _setTheme,
+          itemBuilder: (_) => [
+            for (final t in kThemes)
+              PopupMenuItem(value: t.code, child: Text(t.label)),
           ],
         ),
       ),
