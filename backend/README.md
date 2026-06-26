@@ -18,8 +18,10 @@ cp .env.example .env        # then add OPENAI_API_KEY (OpenRouter sk-or-...)
 ```
 - `GET /health` — liveness
 - `GET /` — WebSocket test client (`web/index.html`)
-- `WS  /ws` — drives the agent: `position` / `utterance` / `audio` / `language` in →
-  `narration` / `reply` / `transcript` / `state` out
+- `WS  /ws` — drives the agent: `position` / `utterance` / `audio` / `language` / `ping` in →
+  `narration` / `reply` / `transcript` / `state` / `ping` out. Connect with `?sid=<stable-id>`
+  to **resume** the same session across reconnects (WiFi/cell drops); both sides send a `ping`
+  keepalive so an idle socket isn't reaped mid-walk. See `../CONTINUE.md` §0.
 
 ## Checks
 ```bash

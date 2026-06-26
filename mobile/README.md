@@ -32,7 +32,9 @@ an **OpenStreetMap** map, lets you **ask by voice or text**, and runs in **8 lan
   button for a typed question; the reply is shown and spoken back.
 - **Settings & history** — dev controls (WebSocket URL, simulated-walk toggle) live in a
   Settings sheet; the full message feed is a swipe-up **History** sheet. Auto-reconnect with
-  backoff is built in.
+  backoff is built in, plus a **keepalive ping** (so an idle socket isn't reaped mid-walk) and a
+  stable per-launch **session id** sent as `?sid=` so a dropped link **resumes the same tour**
+  (no repeated narration) instead of starting over.
 
 ## Platforms
 - ✅ **Android** — builds an APK, runs on the `guide_emu` emulator (and real devices).
