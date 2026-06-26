@@ -29,18 +29,29 @@ class PlaceProvider(Protocol):
 # Overpass (live)
 # --------------------------------------------------------------------------- #
 _SELECTORS = (
+    # culture & sightseeing: every tourism feature (museum, gallery, artwork,
+    # attraction, viewpoint, zoo, aquarium, theme_park, ...) and everything historic
+    # (monument, memorial, castle, ruins, city walls/gate, aqueduct, ...).
     '"tourism"',
     '"historic"',
+    # worship + civic / cultural institutions — usually the landmark buildings of an area
     '"amenity"="place_of_worship"',
-    '"amenity"~"theatre|cinema|arts_centre|fountain"',
-    '"leisure"~"park|garden|nature_reserve"',
-    # nature & water — so the guide notices reservoirs, rivers, lakes, forests, hills
-    '"natural"~"water|wood|peak|bay|beach|cape|cliff|spring|waterfall|volcano|glacier|wetland"',
+    '"amenity"~"theatre|cinema|arts_centre|concert_hall|fountain|university|college|library|marketplace|townhall|courthouse|monastery|exhibition_centre"',
+    '"amenity"="grave_yard"',
+    # named squares & pedestrian promenades — the spine of a city walk
+    '"place"="square"',
+    '"highway"="pedestrian"',
+    # parks, gardens, civic green & sports venues
+    '"leisure"~"park|garden|nature_reserve|common|marina|stadium"',
+    # nature & water — reservoirs, rivers, lakes, forests, hills, caves, rock features
+    '"natural"~"water|wood|peak|hill|ridge|bay|beach|cape|cliff|cave_entrance|arch|rock|spring|geyser|waterfall|volcano|glacier|wetland"',
     '"water"',
-    '"waterway"~"river|canal|waterfall|dam"',
-    '"landuse"~"reservoir|forest|orchard|vineyard|allotments"',
+    '"waterway"~"river|canal|waterfall|dam|lock|weir"',
+    '"landuse"~"reservoir|forest|orchard|vineyard|allotments|cemetery"',
     # notable man-made structures
-    '"man_made"~"bridge|tower|lighthouse|watermill|windmill|pier|obelisk"',
+    '"man_made"~"bridge|tower|lighthouse|watermill|windmill|pier|obelisk|aqueduct|water_tower|city_gate|gasometer|telescope"',
+    # landmark buildings that carry no other interesting tag (cathedral, palace, ...)
+    '"building"~"cathedral|church|chapel|temple|mosque|synagogue|monastery|palace|castle|fort|government|townhall|train_station|stadium|university|library|theatre|museum|tower|triumphal_arch|gatehouse|windmill"',
 )
 
 
