@@ -109,6 +109,12 @@ class AppLocalizationsRu extends AppLocalizations {
   String get chipReady => 'готов';
 
   @override
+  String get chipError => 'источник недоступен';
+
+  @override
+  String get chipOffline => 'оффлайн';
+
+  @override
   String metaConnecting(String url) {
     return '· подключение $url';
   }

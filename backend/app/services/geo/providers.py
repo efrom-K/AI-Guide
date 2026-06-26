@@ -53,7 +53,7 @@ def build_query(center: GeoPoint, radius_m: float) -> str:
     # "geom" (not "center") so linear/area features (rivers, canals, bays) report
     # their geometry — we then snap to the point nearest the user, not the way's
     # midpoint, which for a long canal sits kilometres away.
-    return f"[out:json][timeout:25];({body});out tags geom;"
+    return f"[out:json][timeout:15];({body});out tags geom;"
 
 
 def _nearest(origin: GeoPoint, geometry: list[dict]) -> tuple[float, float] | None:
@@ -113,7 +113,9 @@ class OverpassProvider:
 
     async def fetch_places(self, center: GeoPoint, radius_m: float) -> list[Place]:
         query = build_query(center, radius_m)
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # 15s covers the mirror under normal load; bounded so a slow Overpass can't
+        # stack multi-minute stalls across adaptive-radius expansions.
+        async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(self.url, data={"data": query})
             resp.raise_for_status()
             return parse_elements(resp.json().get("elements", []), center)

@@ -81,14 +81,14 @@ class OverpassGeocoder:
     def _query(point: GeoPoint) -> str:
         lat, lon = point.lat, point.lon
         return (
-            "[out:json][timeout:25];"
+            "[out:json][timeout:15];"
             f"is_in({lat},{lon})->.a;"
             "area.a[admin_level];out tags;"
             f"way(around:35,{lat},{lon})[highway][name];out tags 3;"
         )
 
     async def reverse(self, point: GeoPoint, language: str = "ru") -> Address:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=12.0) as client:
             resp = await client.post(self.url, data={"data": self._query(point)})
             resp.raise_for_status()
             return parse_address(resp.json().get("elements", []), language)

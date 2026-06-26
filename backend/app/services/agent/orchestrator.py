@@ -16,6 +16,7 @@ FSM (states x events -> next), incl. degradation paths from the review:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -45,6 +46,11 @@ _CONVO_CAP = 20
 # is empty the guide keeps adding to the current place's story until the Narrator
 # runs out (returns silence), rather than going quiet after a couple of lines.
 _MAX_ELABORATE = 6
+# Hard ceiling on the adaptive-radius discovery per tick. Overpass calls are bounded
+# individually, but a barren area chains several expansions; this caps the whole
+# search so a tick can't stall for minutes in a sparse/foreign place. On timeout we
+# keep talking about the current place rather than going silent.
+_DISCOVERY_DEADLINE_S = 20.0
 
 
 class State(StrEnum):
@@ -125,12 +131,18 @@ class Orchestrator:
         try:
             # Always start discovery tight (default radius) so the search never
             # stays inflated at 500 m; it still expands within this tick if nothing
-            # is found, but the next tick starts close again.
-            result = await self.discovery.discover_adaptive(
-                position, heading, st.seen_place_ids, settings.default_radius_m
+            # is found, but the next tick starts close again. Bounded by an overall
+            # deadline so a slow/blocked Overpass can't stall the tick for minutes.
+            result = await asyncio.wait_for(
+                self.discovery.discover_adaptive(
+                    position, heading, st.seen_place_ids, settings.default_radius_m
+                ),
+                timeout=_DISCOVERY_DEADLINE_S,
             )
-        except Exception:
-            return await self._finish(st, State.ERROR, "error")
+        except Exception:  # includes asyncio.TimeoutError from the deadline
+            # Don't go silent: keep elaborating on the current place (or a short area
+            # line) until discovery succeeds on a later tick.
+            return await self._continue_monologue(st, heading, pace)
 
         st.current_radius_m = result.radius_m
 

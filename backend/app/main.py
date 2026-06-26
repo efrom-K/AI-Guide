@@ -12,6 +12,7 @@ import asyncio
 import base64
 import contextlib
 import logging
+import re
 import uuid
 from pathlib import Path
 
@@ -21,8 +22,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from app.config import settings
 from app.services.agent.factory import build_orchestrator
 from app.services.agent.languages import normalize
-from app.services.llm.client import METER, SESSION_ID
 from app.services.agent.orchestrator import Orchestrator, OrchestratorOutput, merge_patch
+from app.services.llm.client import METER, SESSION_ID
 from app.services.stt.stt import STTClient, build_stt
 from app.shared.schemas import (
     GeoPoint,
@@ -43,10 +44,13 @@ _log = logging.getLogger("aiguide.ws")
 _active_sessions: set[str] = set()
 _counters = {"step_errors": 0, "question_errors": 0}
 _READY_FAIL_THRESHOLD = 3  # consecutive LLM failures => /ready goes unhealthy
+_PING_INTERVAL_S = 20  # WS keepalive cadence: keeps mobile NAT/proxy mappings alive
+_SID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")  # accepted client session-id shape
 
 _WEB_INDEX = Path(__file__).resolve().parent.parent / "web" / "index.html"
 _orchestrator: Orchestrator | None = None
 _stt: STTClient | None = None
+_stt_lock = asyncio.Lock()
 
 
 def get_orchestrator() -> Orchestrator:
@@ -56,21 +60,28 @@ def get_orchestrator() -> Orchestrator:
     return _orchestrator
 
 
-def get_stt() -> STTClient:
+async def get_stt() -> STTClient:
+    """Build the STT client off the event loop. ``faster-whisper`` model load is a
+    synchronous, multi-second (first-run: multi-minute download) operation — running
+    it inline would freeze EVERY connection. We build it in a thread under a lock so
+    it loads once and never blocks the loop, whether triggered by warm-up or the
+    first voice question."""
     global _stt
     if _stt is None:
-        _stt = build_stt()
+        async with _stt_lock:
+            if _stt is None:
+                _stt = await asyncio.to_thread(build_stt)
     return _stt
 
 
 @app.on_event("startup")
 async def _warm_stt() -> None:
     """Preload the STT model off the request path so the first voice question
-    doesn't pay the (one-time) model-load cost. Done in a thread; non-fatal."""
+    doesn't pay the (one-time) model-load cost. Non-fatal."""
 
     async def _load() -> None:
         try:
-            await asyncio.to_thread(get_stt)
+            await get_stt()
         except Exception:  # noqa: BLE001 — warming is best-effort
             pass
 
@@ -170,6 +181,19 @@ class _SessionRuntime:
         async with self.send_lock:
             await self.ws.send_json(obj)
 
+    async def run_heartbeat(self) -> None:
+        """App-level keepalive. A periodic ping keeps mobile-carrier NAT / proxy
+        mappings alive during narration lulls, so an idle socket isn't silently
+        reaped (the cause of the reconnect storms seen on a real walk). The client
+        ignores it; if the peer is already gone the send fails and the connection
+        tears down promptly."""
+        while True:
+            await asyncio.sleep(_PING_INTERVAL_S)
+            try:
+                await self.send_json({"type": "ping"})
+            except Exception:  # noqa: BLE001 — peer gone; let the receive loop end the session
+                return
+
     async def run_producer(self) -> None:
         while True:
             self.step_task = asyncio.ensure_future(self._step())
@@ -222,7 +246,8 @@ class _SessionRuntime:
             if kind == "audio":
                 a = WSAudioInput.model_validate(msg)
                 st = await self.orch.store.load(self.session_id)
-                text = await get_stt().transcribe(
+                stt = await get_stt()
+                text = await stt.transcribe(
                     base64.b64decode(a.data_b64), language=st.language
                 )
                 await self.send_json({"type": "transcript", "text": text})
@@ -251,6 +276,14 @@ def _client_ip(websocket: WebSocket) -> str:
     return websocket.client.host if websocket.client else "?"
 
 
+def _session_id_for(websocket: WebSocket) -> str:
+    """Resume the SAME session across reconnects when the client supplies a stable
+    ``?sid=``; otherwise mint a fresh one. Validated to a safe shape so the id can't
+    be used to probe or collide with arbitrary store keys."""
+    sid = websocket.query_params.get("sid", "").strip()
+    return sid if _SID_RE.match(sid) else uuid.uuid4().hex
+
+
 def _too_big(msg: dict, kind: str) -> bool:
     if kind == "utterance":
         return len(str(msg.get("text", ""))) > settings.max_utterance_chars
@@ -269,17 +302,30 @@ async def ws(websocket: WebSocket) -> None:
     if settings.max_connections_per_ip and _ip_conns.get(ip, 0) >= settings.max_connections_per_ip:
         await websocket.close(code=1008)
         return
-    _ip_conns[ip] = _ip_conns.get(ip, 0) + 1
 
     await websocket.accept()
-    orch = get_orchestrator()
-    rt = _SessionRuntime(websocket, orch, uuid.uuid4().hex)
-    _active_sessions.add(rt.session_id)
-    producer = asyncio.ensure_future(rt.run_producer())
+    # Count the connection only AFTER a successful accept and INSIDE the try, so the
+    # finally always decrements. Previously a handshake/setup failure leaked a slot;
+    # a flaky phone reconnecting could pile up leaks until it tripped
+    # max_connections_per_ip and locked itself (and NAT-mates) out until restart.
+    _ip_conns[ip] = _ip_conns.get(ip, 0) + 1
+    rt: _SessionRuntime | None = None
+    producer: asyncio.Task | None = None
+    heartbeat: asyncio.Task | None = None
     try:
+        orch = get_orchestrator()
+        # A stable client ``?sid=`` resumes the SAME session on reconnect (seen-list,
+        # history, area intro) instead of restarting the tour — the fix for the
+        # "repeats + lost continuity after every WiFi/cell drop" symptom.
+        rt = _SessionRuntime(websocket, orch, _session_id_for(websocket))
+        _active_sessions.add(rt.session_id)
+        producer = asyncio.ensure_future(rt.run_producer())
+        heartbeat = asyncio.ensure_future(rt.run_heartbeat())
         while True:
             msg = await websocket.receive_json()
             kind = msg.get("type")
+            if kind in ("ping", "pong"):
+                continue  # keepalive — nothing to do
             if _too_big(msg, kind):
                 await rt.send_json({"type": "error", "message": "message too large"})
                 continue
@@ -321,11 +367,17 @@ async def ws(websocket: WebSocket) -> None:
             _ip_conns[ip] = n
         else:
             _ip_conns.pop(ip, None)
-        producer.cancel()
-        if rt.step_task is not None:
+        if producer is not None:
+            producer.cancel()
+        if heartbeat is not None:
+            heartbeat.cancel()
+        if rt is not None and rt.step_task is not None:
             rt.step_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await producer
-        with contextlib.suppress(Exception):
-            await orch.store.delete(rt.session_id)  # free the session promptly
-        _active_sessions.discard(rt.session_id)
+        if producer is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await producer
+        if rt is not None:
+            _active_sessions.discard(rt.session_id)
+        # The session is intentionally NOT deleted on disconnect: it is kept so a
+        # reconnect (WiFi/cell drop) resumes the same tour. The store TTL-evicts idle
+        # sessions (session_ttl_s) and LRU-caps the total, so this cannot leak.

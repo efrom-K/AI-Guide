@@ -40,6 +40,15 @@ const kLangs = <String, ({String label, String tts})>{
 // Map an arbitrary locale code to a supported one, else fall back to English.
 String normLang(String code) => kLangs.containsKey(code) ? code : 'en';
 
+// A stable session id for this app launch, sent as ?sid= on every (re)connect so a
+// dropped link (WiFi/cell) resumes the SAME backend session — preserving the
+// seen-list / history so the tour continues instead of repeating from scratch.
+String _genSessionId() {
+  final r = Random();
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  return List.generate(24, (_) => chars[r.nextInt(chars.length)]).join();
+}
+
 // Default backend URL — baked at build time so a test build points at the host
 // with no manual setup:  flutter build ... --dart-define=WS_URL=wss://host/ws
 // The in-app Settings field overrides it. Falls back to localhost for dev/emulator.
@@ -210,6 +219,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   bool _wantConnected = false; // user intends a live connection (drives auto-reconnect)
   Timer? _reconnectTimer;
   int _retries = 0;
+  Timer? _heartbeat; // app-level WS keepalive: ping the server so a NAT/proxy can't
+  // reap the idle socket during a narration lull (the reconnect-storm fix).
+  final String _sid = _genSessionId(); // stable id for resume-on-reconnect
 
   bool get _active => _walkTimer != null || _gpsSub != null;
 
@@ -321,11 +333,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void _connect() {
     _wantConnected = true;
     _reconnectTimer?.cancel();
+    // Tear down any previous (possibly half-open) socket first so we never run two
+    // overlapping connections — the churn seen in the prod logs on a flaky link.
+    _heartbeat?.cancel();
+    _ch?.sink.close();
     var url = _urlCtrl.text.trim();
-    if (kWsToken.isNotEmpty) {
-      final sep = url.contains('?') ? '&' : '?';
-      url += '${sep}token=${Uri.encodeComponent(kWsToken)}';
-    }
+    final params = <String>['sid=$_sid']; // resume the same session on reconnect
+    if (kWsToken.isNotEmpty) params.add('token=${Uri.encodeComponent(kWsToken)}');
+    final sep = url.contains('?') ? '&' : '?';
+    url += sep + params.join('&');
     final ch = WebSocketChannel.connect(Uri.parse(url));
     ch.stream.listen(
       (data) {
@@ -372,14 +388,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _state = '—';
       _add('meta', AppLocalizations.of(context)!.metaConnecting(_urlCtrl.text));
     });
-    // New WS connection => fresh backend session; (re)send the language first so
-    // narration + STT use it before any position/audio arrives, then the theme.
+    // (Re)send the language first so narration + STT use it before any
+    // position/audio arrives, then the theme. With ?sid= the backend resumes the
+    // same session, so this is idempotent and the tour continues where it left off.
     _send({'type': 'language', 'language': _lang});
     if (_theme.isNotEmpty) _send({'type': 'theme', 'theme': _theme});
+    // Keepalive: ping while connected so an idle socket isn't reaped mid-lull.
+    _heartbeat = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (_connected) _send({'type': 'ping'});
+    });
   }
 
   // Socket dropped: reflect it, and auto-reconnect if the user still wants to be on.
   void _onDisconnected() {
+    _heartbeat?.cancel();
     setState(() => _connected = false);
     if (!_wantConnected) return;
     final delay = Duration(seconds: (1 << _retries).clamp(1, 16)); // 1,2,4,8,16s
@@ -393,6 +415,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void _disconnect() {
     _wantConnected = false;
     _reconnectTimer?.cancel();
+    _heartbeat?.cancel();
     _stopWalk();
     _hush();
     _ch?.sink.close();
@@ -597,6 +620,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _walkTimer?.cancel();
     _gpsSub?.cancel();
     _reconnectTimer?.cancel();
+    _heartbeat?.cancel();
     _tts.stop();
     _rec.dispose();
     _ch?.sink.close();
@@ -619,6 +643,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       'listening' => (label: l.chipListening, color: Colors.tealAccent, active: true),
       'answering' => (label: l.chipAnswering, color: Colors.tealAccent, active: true),
       'expanding' => (label: l.chipExpanding, color: Colors.lightBlue, active: true),
+      // Upstream trouble: the guide can't reach its data/LLM source. Surface it
+      // (was silently swallowed into "ready"/silence) so the user knows it's a
+      // problem, not just "nothing nearby".
+      'error' || 'recovery' => (label: l.chipError, color: Colors.orangeAccent, active: true),
+      'offline' => (label: l.chipOffline, color: Colors.redAccent, active: false),
       _ => (label: l.chipReady, color: const Color(0xFF34D399), active: false),
     };
   }

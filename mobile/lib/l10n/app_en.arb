@@ -33,6 +33,8 @@
   "chipAnswering": "answering",
   "chipExpanding": "expanding radius",
   "chipReady": "ready",
+  "chipError": "source unavailable",
+  "chipOffline": "offline",
   "metaConnecting": "· connecting {url}",
   "@metaConnecting": { "placeholders": { "url": { "type": "String" } } },
   "metaConnectionLost": "· connection lost, reconnecting in {seconds}s…",

@@ -308,6 +308,18 @@ abstract class AppLocalizations {
   /// **'ready'**
   String get chipReady;
 
+  /// No description provided for @chipError.
+  ///
+  /// In en, this message translates to:
+  /// **'source unavailable'**
+  String get chipError;
+
+  /// No description provided for @chipOffline.
+  ///
+  /// In en, this message translates to:
+  /// **'offline'**
+  String get chipOffline;
+
   /// No description provided for @metaConnecting.
   ///
   /// In en, this message translates to:

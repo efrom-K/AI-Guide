@@ -33,6 +33,8 @@
   "chipAnswering": "отвечает",
   "chipExpanding": "расширяет радиус",
   "chipReady": "готов",
+  "chipError": "источник недоступен",
+  "chipOffline": "оффлайн",
   "metaConnecting": "· подключение {url}",
   "metaConnectionLost": "· связь потеряна, переподключение через {seconds}s…",
   "metaGeoDisabled": "⚠ Геолокация выключена в системе",

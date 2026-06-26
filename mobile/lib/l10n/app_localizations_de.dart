@@ -109,6 +109,12 @@ class AppLocalizationsDe extends AppLocalizations {
   String get chipReady => 'bereit';
 
   @override
+  String get chipError => 'Quelle nicht verfügbar';
+
+  @override
+  String get chipOffline => 'offline';
+
+  @override
   String metaConnecting(String url) {
     return '· Verbindung $url';
   }

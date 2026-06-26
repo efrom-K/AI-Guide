@@ -248,7 +248,10 @@ class OpenAICompatLLM:
         self._url = (base_url or settings.openai_base_url).rstrip("/") + "/chat/completions"
         self._default = default_model or settings.openai_model
         self._client = httpx.AsyncClient(
-            timeout=45.0,
+            # Bound a single attempt so a slow/stalled provider can't hold a narration
+            # tick for ~45s (×2 retries ×2 json re-ask ≈ 3 min). 22s covers a normal
+            # DeepSeek call with headroom; _post_with_retry adds at most one retry.
+            timeout=httpx.Timeout(22.0, connect=8.0),
             headers={
                 "Authorization": f"Bearer {api_key or settings.openai_api_key}",
                 "X-Title": "AI Audio Guide",

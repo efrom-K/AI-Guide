@@ -33,6 +33,8 @@
   "chipAnswering": "risponde",
   "chipExpanding": "amplia il raggio",
   "chipReady": "pronto",
+  "chipError": "fonte non disponibile",
+  "chipOffline": "offline",
   "metaConnecting": "· connessione {url}",
   "metaConnectionLost": "· connessione persa, riconnessione tra {seconds}s…",
   "metaGeoDisabled": "⚠ La geolocalizzazione è disattivata nel sistema",

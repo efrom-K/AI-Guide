@@ -1,3 +1,4 @@
+import asyncio
 import base64
 
 from fastapi.testclient import TestClient
@@ -60,3 +61,32 @@ def test_ws_unknown_type_errors():
         ws.send_json({"type": "nonsense"})
         msg = ws.receive_json()
         assert msg["type"] == "error"
+
+
+def test_ws_ping_is_ignored():
+    # keepalive pings must not error or disturb the narration flow
+    client = _heuristic_app()
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "ping"})
+        ws.send_json(
+            {"type": "position", "lat": 55.7525, "lon": 37.6231, "gaze_confidence": "low"}
+        )
+        assert ws.receive_json()["type"] == "state"
+        assert ws.receive_json()["type"] == "narration"
+
+
+def test_ws_resume_keeps_session_after_disconnect():
+    # A reconnect with the same ?sid= must resume the SAME session: the seen-list
+    # survives the disconnect (no delete-on-disconnect) so the tour doesn't repeat.
+    client = _heuristic_app()
+    orch = main_module._orchestrator
+    sid = "resumetest123456"
+    with client.websocket_connect(f"/ws?sid={sid}") as ws:
+        ws.send_json(
+            {"type": "position", "lat": 55.7525, "lon": 37.6231, "gaze_confidence": "low"}
+        )
+        assert ws.receive_json()["type"] == "state"
+        assert ws.receive_json()["type"] == "narration"
+    # after the socket closes the session is kept (TTL-evicted later, not deleted now)
+    state = asyncio.run(orch.store.load(sid))
+    assert state.seen_place_ids, "seen-list should persist across reconnects"

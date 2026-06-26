@@ -108,6 +108,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get chipReady => '就绪';
 
   @override
+  String get chipError => '数据源不可用';
+
+  @override
+  String get chipOffline => '离线';
+
+  @override
   String metaConnecting(String url) {
     return '· 正在连接 $url';
   }
