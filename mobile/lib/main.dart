@@ -11,6 +11,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -189,7 +190,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final FlutterTts _tts = FlutterTts();
   bool _voice = true; // speaker on/off
   final List<_Speech> _speakQueue = []; // paragraphs/replies awaiting TTS (in order)
-  bool _curIsNarration = false; // is the utterance now playing a narration?
   String _theme = ''; // current tour theme code ("" = auto)
   late String _lang; // current guide language code (en|ru|es|…)
 
@@ -237,17 +237,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     await _tts.setSpeechRate(0.5); // calmer, guide-like pace
     await _tts.setPitch(1.0);
     await _tts.awaitSpeakCompletion(true);
+    // The queue is driven by awaiting speak() in _speakNext (reliable across
+    // platforms). On web the browser's SpeechSynthesis 'end' event is sometimes
+    // dropped mid-utterance (a known Chrome bug, easy to hit when an overlay opens),
+    // which used to leave _speaking stuck true and the guide permanently silent —
+    // so we don't rely on these callbacks to advance, only to reflect UI state.
     _tts.setStartHandler(() {
-      setState(() => _speaking = true);
-      // Pipeline: as soon as a paragraph starts playing, tell the server so it
-      // prepares the next one — the continuous story stays one step ahead, no gaps.
-      if (_curIsNarration) _send({'type': 'played'});
+      if (mounted) setState(() => _speaking = true);
     });
-    _tts.setCompletionHandler(() {
-      setState(() => _speaking = false);
-      _speakNext(); // play the next queued paragraph (usually already arrived)
+    _tts.setCancelHandler(() {
+      if (mounted) setState(() => _speaking = false);
     });
-    _tts.setCancelHandler(() => setState(() => _speaking = false));
   }
 
   // Queue a paragraph/reply for TTS (never cut a line mid-sentence). Narration
@@ -265,9 +265,28 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Future<void> _speakNext() async {
     if (_speaking || _speakQueue.isEmpty) return;
     final s = _speakQueue.removeAt(0);
-    _curIsNarration = s.isNarration;
     setState(() => _speaking = true); // claim synchronously to avoid overlap
-    await _tts.speak(s.text);
+    // Pace the server the moment a paragraph starts (so it prepares the next one).
+    // Sent here — not from the TTS start callback — because that callback is
+    // unreliable on web; missing it stalled the whole story after one paragraph.
+    if (s.isNarration) _send({'type': 'played'});
+    try {
+      if (kIsWeb) {
+        // Watchdog: if the browser drops the 'end' event, release the queue after a
+        // generous estimate so the guide never goes permanently silent. Tuned long
+        // enough not to clip real speech (~10 chars/s + 6s margin).
+        final estMs = (s.text.length / 10.0 * 1000).clamp(4000, 40000).toInt();
+        await Future.any([
+          _tts.speak(s.text),
+          Future<void>.delayed(Duration(milliseconds: estMs + 6000)),
+        ]);
+      } else {
+        await _tts.speak(s.text); // mobile: awaitSpeakCompletion is reliable
+      }
+    } catch (_) {/* keep the queue moving even if a single utterance fails */}
+    if (!mounted) return;
+    setState(() => _speaking = false);
+    _speakNext(); // drive the next paragraph ourselves (don't depend on callbacks)
   }
 
   // Point the TTS voice at the given language (best-effort; unknown tags are no-ops).
@@ -296,6 +315,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Future<void> _hush() async {
     _speakQueue.clear();
     await _tts.stop();
+    // Reset explicitly: on web stop() maps to onComplete, not onCancel, so the
+    // cancel handler may not fire — leaving _speaking stuck and the queue frozen.
+    if (mounted) setState(() => _speaking = false);
   }
 
   void _add(String kind, String text) {
