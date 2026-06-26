@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 
 from fastapi.testclient import TestClient
 
@@ -87,6 +88,36 @@ def test_ws_listen_pauses_then_question_resumes():
         # tour resumes after answering
         assert ws.receive_json()["type"] == "state"
         assert ws.receive_json()["type"] == "narration"
+
+
+def test_producer_exits_on_shutdown_even_while_barging():
+    """Zombie-producer regression: a disconnect (the /ws finally cancels the producer)
+    that lands WHILE a barge-in is in flight must still terminate the producer. Before
+    the fix the shutdown CancelledError was swallowed as a barge-in preempt, so the
+    producer parked/hot-looped forever on the closed socket. The `closing` flag makes
+    the producer tell the two apart and exit."""
+
+    async def scenario():
+        rt = main_module._SessionRuntime(ws=None, orch=None, session_id="z")
+
+        async def idle_step():  # stand-in for _step: park until cancelled
+            rt.wake.clear()
+            await rt.wake.wait()
+
+        rt._step = idle_step
+        producer = asyncio.ensure_future(rt.run_producer())
+        await asyncio.sleep(0.05)  # let it create + await the first step_task
+        # simulate the /ws finally during an in-flight barge-in:
+        rt.barging = True
+        rt.closing = True
+        producer.cancel()
+        # must finish promptly; without the fix it parks on resume.wait() forever and
+        # this wait_for raises TimeoutError instead.
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(producer, timeout=2.0)
+        assert producer.done()
+
+    asyncio.run(scenario())
 
 
 def test_ws_unknown_type_errors():

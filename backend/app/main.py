@@ -171,6 +171,7 @@ class _SessionRuntime:
         self.resume = asyncio.Event()  # a barge-in finished; producer may continue
         self.barging = False
         self.listening = False  # mic open: hold the producer so it can't talk over the user
+        self.closing = False  # the socket is gone — the producer must EXIT, not preempt
         self.step_task: asyncio.Task | None = None
         self.send_lock = asyncio.Lock()
 
@@ -201,6 +202,13 @@ class _SessionRuntime:
             try:
                 await self.step_task
             except asyncio.CancelledError:
+                # Distinguish a barge-in preempt (handle_question cancelled the inner
+                # step_task) from a real shutdown (the /ws finally cancelled the whole
+                # producer). Without this check, a disconnect that lands while barging
+                # was swallowed as a preempt -> the producer kept hot-looping forever,
+                # sending into the closed socket (the "zombie producer" leak).
+                if self.closing:
+                    raise  # socket gone -> exit the producer for good
                 if self.barging:  # preempted by a question, not a shutdown
                     self.barging = False
                     await self.resume.wait()
@@ -401,6 +409,8 @@ async def ws(websocket: WebSocket) -> None:
             _ip_conns[ip] = n
         else:
             _ip_conns.pop(ip, None)
+        if rt is not None:
+            rt.closing = True  # tell the producer this cancel is a shutdown, not a barge-in
         if producer is not None:
             producer.cancel()
         if heartbeat is not None:
