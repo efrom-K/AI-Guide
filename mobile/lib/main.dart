@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -17,7 +18,6 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -196,6 +196,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   // Microphone — ask the guide by voice (barge-in).
   final AudioRecorder _rec = AudioRecorder();
   bool _recording = false;
+  StreamSubscription<Uint8List>? _audioSub; // mic capture stream (cross-platform)
+  final List<int> _audioBuf = []; // accumulated PCM16 while recording
 
   // Map (CARTO dark tiles via flutter_map).
   final MapController _map = MapController();
@@ -691,25 +693,58 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _add('meta', l.metaMicNoPermission);
       return;
     }
-    _hush(); // barge-in: hush the guide while the user speaks
-    final dir = await getTemporaryDirectory();
-    final path = '${dir.path}/ask.wav';
-    await _rec.start(
-      const RecordConfig(encoder: AudioEncoder.wav, sampleRate: 16000, numChannels: 1),
-      path: path,
-    );
-    setState(() => _recording = true);
+    _hush(); // barge-in: stop the guide and listen
+    _audioBuf.clear();
+    try {
+      // Stream PCM into memory — works on web AND mobile (no path_provider /
+      // dart:io File, which throw on web and made the mic button do nothing there).
+      final stream = await _rec.startStream(
+        const RecordConfig(
+          encoder: AudioEncoder.pcm16bits, sampleRate: 16000, numChannels: 1),
+      );
+      _audioSub = stream.listen(_audioBuf.addAll);
+      setState(() => _recording = true);
+    } catch (e) {
+      _add('meta', '⚠ ${l.metaMicNoPermission}');
+    }
   }
 
   Future<void> _stopRecAndSend() async {
     final l = AppLocalizations.of(context)!; // capture before awaits
-    final path = await _rec.stop();
+    await _rec.stop();
+    await _audioSub?.cancel();
+    _audioSub = null;
     setState(() => _recording = false);
-    if (path == null) return;
-    final bytes = await File(path).readAsBytes();
-    if (bytes.isEmpty) return;
-    _send({'type': 'audio', 'data_b64': base64Encode(bytes), 'format': 'wav'});
-    _add('meta', l.metaSentByVoice(bytes.length));
+    if (_audioBuf.isEmpty) return;
+    final wav = _wavFromPcm16(_audioBuf, sampleRate: 16000, channels: 1);
+    _audioBuf.clear();
+    _send({'type': 'audio', 'data_b64': base64Encode(wav), 'format': 'wav'});
+    _add('meta', l.metaSentByVoice(wav.length));
+  }
+
+  // Wrap raw PCM16 (mono, 16 kHz) in a minimal WAV container so the backend's
+  // Whisper STT can decode it. Built in memory — no filesystem, web-safe.
+  List<int> _wavFromPcm16(List<int> pcm, {required int sampleRate, required int channels}) {
+    final byteRate = sampleRate * channels * 2;
+    final out = <int>[];
+    void s(String x) => out.addAll(x.codeUnits);
+    void u32(int v) => out.addAll([v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff]);
+    void u16(int v) => out.addAll([v & 0xff, (v >> 8) & 0xff]);
+    s('RIFF');
+    u32(36 + pcm.length);
+    s('WAVE');
+    s('fmt ');
+    u32(16); // PCM fmt chunk size
+    u16(1); // audio format = PCM
+    u16(channels);
+    u32(sampleRate);
+    u32(byteRate);
+    u16(channels * 2); // block align
+    u16(16); // bits per sample
+    s('data');
+    u32(pcm.length);
+    out.addAll(pcm);
+    return out;
   }
 
   @override
@@ -718,6 +753,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _gpsSub?.cancel();
     _reconnectTimer?.cancel();
     _heartbeat?.cancel();
+    _audioSub?.cancel();
     _tts.stop();
     _rec.dispose();
     _ch?.sink.close();
