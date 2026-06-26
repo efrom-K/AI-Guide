@@ -38,30 +38,69 @@ from a Play link. Needs a Google Play Console account ($25 once) and a real uplo
 (the current build uses the debug key — replace it via `android/key.properties` +
 `signingConfigs` for Play).
 
-## iOS — Xcode-ready project (build on a Mac or in the cloud)
+## iOS — build on a Mac (step by step for whoever has the MacBook)
 
-`ios/` is scaffolded with permissions (location, microphone) and an ATS exception. iOS can't
-be built on Windows, so use one of:
+The `ios/` project is fully scaffolded and ready to open in Xcode: iOS 13+ target, location +
+microphone permissions, an ATS exception (so the `wss://` host works), and `CFBundleDisplayName`
+"AI Audio Guide". The backend host is **baked in at build time** via `--dart-define=WS_URL=…`,
+so once installed it just connects — nothing to configure on the phone.
 
-**A. Codemagic (no Mac needed — recommended for you).** `codemagic.yaml` is in this folder.
-1. Sign up at codemagic.io, connect this git repo.
-2. In the Codemagic UI add: an **Apple Developer / App Store Connect API key**, your
-   **bundle id** (see note below), and set the project working directory to `mobile/`.
-3. Set the `WS_URL` env var (or edit `codemagic.yaml`).
-4. Run the workflow → it builds the IPA and uploads to **TestFlight** → your lead installs via
-   the TestFlight app from an email/public link.
+Backend host (already deployed, TLS): `wss://178.83.121.62.sslip.io/ws`
 
-**B. On a Mac with Xcode.**
+### 0. One-time prerequisites on the Mac
+- **Xcode** (from the Mac App Store) → open it once, accept the license, let it install components.
+- **Flutter SDK** — https://docs.flutter.dev/get-started/install/macos (then `flutter doctor`).
+- **CocoaPods** — `sudo gem install cocoapods` (or `brew install cocoapods`). Flutter runs
+  `pod install` for you on the first build.
+- An **Apple ID** (a free one is enough to install on *your own* iPhone; see path A).
+
+### 1. Get the code and fetch packages
 ```bash
-cd mobile
-flutter pub get
-flutter build ipa --release --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws
-# then upload build/ios/ipa/*.ipa via Xcode Organizer or `xcrun altool` to TestFlight
+git clone https://github.com/efrom-K/AI-Guide.git
+cd AI-Guide/mobile
+flutter pub get          # also generates ios/Podfile + runs pod install on first build
 ```
 
-**Apple prerequisites for installing on a device (either path):** an **Apple Developer
-account** ($99/yr) for TestFlight/ad-hoc. Without it you can only run on the iOS **Simulator**
-or on your own device via free signing (7-day cert).
+### 2. Set the signing team in Xcode (required — the project ships with none)
+```bash
+open ios/Runner.xcworkspace   # MUST be the .xcworkspace, not the .xcodeproj
+```
+In Xcode: select the **Runner** target → **Signing & Capabilities** →
+- tick **Automatically manage signing**,
+- pick your **Team** (your free Apple ID works for installing on your own device),
+- if signing fails with "bundle identifier is not available", change **Bundle Identifier**
+  from `com.example.aiAudioGuide` to something unique, e.g. `com.<yourname>.aiguide`.
+
+### 3a. Install on your own iPhone — free, simplest (7-day cert, re-run weekly)
+Plug in the iPhone (unlock, tap **Trust**), then from `mobile/`:
+```bash
+flutter devices   # find your iPhone's id
+flutter run --release -d <iphone-id> --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws
+```
+First launch: on the iPhone go to **Settings → General → VPN & Device Management → trust your
+developer cert**, reopen the app, and **allow Location + Microphone** when prompted. (You can
+also just hit ▶ Run in Xcode — but then set WS_URL via Product → Scheme → Run → Arguments:
+`--dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws`, or it defaults to localhost.)
+
+### 3b. TestFlight — to send to other testers (needs a paid Apple Developer account, $99/yr)
+```bash
+flutter build ipa --release --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws
+# upload build/ios/ipa/*.ipa via Xcode → Organizer (Distribute App) or the Transporter app,
+# then add testers in App Store Connect → TestFlight; they install via the TestFlight app.
+```
+
+### Gotchas
+- **`flutter run` defaults to `ws://localhost:8000/ws`** if you forget the `--dart-define` — the
+  app then can't reach the backend. Always pass the `WS_URL`. (Testers can also override it in
+  the app: **⚙ Settings → WebSocket URL**.)
+- If pods are stale after a Flutter/plugin change: `cd ios && pod repo update && pod install`.
+- Test on **mobile data**, not Wi-Fi — that's what reproduces real connection conditions.
+
+### Alternative: Codemagic (cloud build, no Mac needed)
+`codemagic.yaml` (in this folder) has three ready workflows: `android-test`, `ios-testflight`
+(needs an App Store Connect API key + real bundle id) and `ios-unsigned` (free, builds an
+unsigned IPA you sideload with Sideloadly/AltStore). Connect the repo at codemagic.io, set
+`WS_URL`, run a workflow.
 
 ## Before store submission (not needed for TestFlight/sideload testing)
 
