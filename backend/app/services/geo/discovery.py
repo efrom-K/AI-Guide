@@ -29,7 +29,9 @@ class Discovery:
         self,
         provider: PlaceProvider,
         max_radius_m: float | None = None,
-        expand_factor: float = 1.6,
+        # Bigger jumps => fewer sequential Overpass calls when an area is sparse
+        # (80 -> 200 -> 500 = 3 calls, vs. 5 at 1.6). Faster to find or give up.
+        expand_factor: float = 2.5,
     ) -> None:
         self.provider = provider
         self.max_radius_m = max_radius_m or settings.max_radius_m

@@ -7,6 +7,7 @@ to the source (live API vs. cached fixtures vs. virtual walk).
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -107,18 +108,36 @@ def parse_elements(elements: list[dict], origin: GeoPoint) -> list[Place]:
     return places
 
 
+# Short-lived cache of Overpass results, keyed by (rounded position, radius). A
+# walking user re-queries almost the same circle every tick; without this the heavy
+# multi-selector query (and its 1.5-8s latency) runs on every tick and every
+# adaptive-radius step. 4-decimal rounding ≈ 11 m, so we reuse within a step or two.
+_OVERPASS_CACHE: dict[tuple[float, float, int], tuple[float, list[Place]]] = {}
+_OVERPASS_CACHE_TTL_S = 90.0
+_OVERPASS_CACHE_MAX = 512
+
+
 class OverpassProvider:
     def __init__(self, url: str | None = None) -> None:
         self.url = url or settings.overpass_url
 
     async def fetch_places(self, center: GeoPoint, radius_m: float) -> list[Place]:
+        key = (round(center.lat, 4), round(center.lon, 4), int(radius_m))
+        now = time.monotonic()
+        hit = _OVERPASS_CACHE.get(key)
+        if hit is not None and now - hit[0] < _OVERPASS_CACHE_TTL_S:
+            return hit[1]
         query = build_query(center, radius_m)
         # 15s covers the mirror under normal load; bounded so a slow Overpass can't
         # stack multi-minute stalls across adaptive-radius expansions.
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(self.url, data={"data": query})
             resp.raise_for_status()
-            return parse_elements(resp.json().get("elements", []), center)
+            places = parse_elements(resp.json().get("elements", []), center)
+        if len(_OVERPASS_CACHE) >= _OVERPASS_CACHE_MAX:
+            _OVERPASS_CACHE.pop(next(iter(_OVERPASS_CACHE)), None)  # FIFO trim
+        _OVERPASS_CACHE[key] = (now, places)
+        return places
 
 
 # --------------------------------------------------------------------------- #

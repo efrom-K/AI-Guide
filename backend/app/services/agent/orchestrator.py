@@ -50,7 +50,7 @@ _MAX_ELABORATE = 6
 # individually, but a barren area chains several expansions; this caps the whole
 # search so a tick can't stall for minutes in a sparse/foreign place. On timeout we
 # keep talking about the current place rather than going silent.
-_DISCOVERY_DEADLINE_S = 20.0
+_DISCOVERY_DEADLINE_S = 14.0
 
 
 class State(StrEnum):
