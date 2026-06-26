@@ -234,7 +234,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Future<void> _initTts() async {
     await _applyTtsLanguage(_lang);
-    await _tts.setSpeechRate(0.5); // calmer, guide-like pace
+    // Web maps rate straight onto SpeechSynthesis (1.0 = normal), so 0.5 there is
+    // half-speed and unpleasant; Android scales differently and 0.5 is a calm pace.
+    await _tts.setSpeechRate(kIsWeb ? 1.0 : 0.5);
     await _tts.setPitch(1.0);
     await _tts.awaitSpeakCompletion(true);
     // The queue is driven by awaiting speak() in _speakNext (reliable across
@@ -591,7 +593,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   void _toggleVoice() {
     setState(() => _voice = !_voice);
-    if (!_voice) _hush();
+    if (!_voice) {
+      _hush();
+    } else if (!_speaking && _speakQueue.isEmpty && (_curText?.isNotEmpty ?? false)) {
+      // Unmute: don't make the user wait for the next line — replay the current one
+      // now. isNarration:false so it doesn't re-trigger server pacing (`played`).
+      _enqueueSpeech(_curText!, isNarration: false);
+    }
   }
 
   // User picked a tour theme: tell the backend to revolve the story around it.
