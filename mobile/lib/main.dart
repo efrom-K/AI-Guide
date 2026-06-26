@@ -230,6 +230,36 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     super.initState();
     _lang = normLang(widget.locale.languageCode);
     _initTts();
+    // Ask for mic + location up front and centre the map on the real position,
+    // rather than sitting on the Moscow default until a walk starts.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _initLocationAndPermissions());
+  }
+
+  Future<void> _initLocationAndPermissions() async {
+    // Mic permission up front (best-effort; some browsers only surface the prompt
+    // on a user gesture — the mic button still requests it on tap as a fallback).
+    try {
+      await _rec.hasPermission();
+    } catch (_) {}
+    // Location permission, then centre the map on the user's real position now.
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) return;
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+        return;
+      }
+      final pos =
+          await Geolocator.getCurrentPosition().timeout(const Duration(seconds: 12));
+      if (!mounted) return;
+      setState(() {
+        _here = LatLng(pos.latitude, pos.longitude);
+        if (pos.heading >= 0) _heading = pos.heading;
+      });
+      if (_mapReady) _animateTo(_here);
+    } catch (_) {/* keep the default centre if location is unavailable */}
   }
 
   Future<void> _initTts() async {
@@ -272,23 +302,60 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     // Sent here — not from the TTS start callback — because that callback is
     // unreliable on web; missing it stalled the whole story after one paragraph.
     if (s.isNarration) _send({'type': 'played'});
-    try {
-      if (kIsWeb) {
-        // Watchdog: if the browser drops the 'end' event, release the queue after a
-        // generous estimate so the guide never goes permanently silent. Tuned long
-        // enough not to clip real speech (~10 chars/s + 6s margin).
-        final estMs = (s.text.length / 10.0 * 1000).clamp(4000, 40000).toInt();
-        await Future.any([
-          _tts.speak(s.text),
-          Future<void>.delayed(Duration(milliseconds: estMs + 6000)),
-        ]);
-      } else {
-        await _tts.speak(s.text); // mobile: awaitSpeakCompletion is reliable
-      }
-    } catch (_) {/* keep the queue moving even if a single utterance fails */}
+    // Chrome's SpeechSynthesis clips an utterance at ~15s, cutting long lines off
+    // mid-phrase. Speak in sentence-sized chunks so each stays well under that.
+    final chunks = kIsWeb ? _chunkForTts(s.text) : [s.text];
+    for (final c in chunks) {
+      if (!mounted || !_voice) break; // unmounted or muted mid-line
+      try {
+        if (kIsWeb) {
+          // Per-chunk watchdog: release if the browser drops the 'end' event so the
+          // queue can never get stuck (generous vs. a ~140-char chunk's real length).
+          final estMs = (c.length / 9.0 * 1000).clamp(2500, 14000).toInt();
+          await Future.any([
+            _tts.speak(c),
+            Future<void>.delayed(Duration(milliseconds: estMs + 4000)),
+          ]);
+        } else {
+          await _tts.speak(c); // mobile: awaitSpeakCompletion is reliable
+        }
+      } catch (_) {/* keep the queue moving even if one chunk fails */}
+    }
     if (!mounted) return;
     setState(() => _speaking = false);
     _speakNext(); // drive the next paragraph ourselves (don't depend on callbacks)
+  }
+
+  // Split a paragraph into <=~140-char chunks at sentence boundaries (then spaces
+  // for an over-long sentence) so web TTS never hits Chrome's ~15s cutoff mid-phrase.
+  List<String> _chunkForTts(String text, {int maxLen = 140}) {
+    final out = <String>[];
+    var buf = '';
+    void flush() {
+      if (buf.trim().isNotEmpty) out.add(buf.trim());
+      buf = '';
+    }
+    for (var sent in text.split(RegExp(r'(?<=[.!?…])\s+'))) {
+      sent = sent.trim();
+      if (sent.isEmpty) continue;
+      while (sent.length > maxLen) {
+        var cut = sent.lastIndexOf(' ', maxLen);
+        if (cut <= 0) cut = maxLen;
+        flush();
+        out.add(sent.substring(0, cut).trim());
+        sent = sent.substring(cut).trim();
+      }
+      if (buf.isEmpty) {
+        buf = sent;
+      } else if (buf.length + 1 + sent.length <= maxLen) {
+        buf = '$buf $sent';
+      } else {
+        flush();
+        buf = sent;
+      }
+    }
+    flush();
+    return out.isEmpty ? [text] : out;
   }
 
   // Point the TTS voice at the given language (best-effort; unknown tags are no-ops).
@@ -772,7 +839,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       options: MapOptions(
         initialCenter: _here,
         initialZoom: 16,
-        onMapReady: () => _mapReady = true,
+        onMapReady: () {
+          _mapReady = true;
+          _animateTo(_here); // snap to the real position if it resolved before the map
+        },
         onPositionChanged: (camera, hasGesture) {
           if (hasGesture && _follow) setState(() => _follow = false);
           if (camera.rotation != _mapRotation) {
