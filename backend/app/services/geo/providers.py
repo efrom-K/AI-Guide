@@ -108,6 +108,53 @@ def parse_elements(elements: list[dict], origin: GeoPoint) -> list[Place]:
     return places
 
 
+# Public Overpass fallbacks, in preference order. A single endpoint is a single
+# point of failure: when the configured mirror is slow or down, BOTH discovery and
+# (Overpass-based) geocoding stall and the guide goes completely silent — the
+# "вообще всё пропало" outage. We try mirrors in turn and the first JSON-200 wins,
+# so one degraded endpoint fails over in seconds instead of stalling the tick.
+# (Curated for real global coverage + reachability: overpass.osm.ch is fast but
+# Switzerland-only — it returns empty for the rest of the planet — so it's omitted.)
+_FALLBACK_OVERPASS_MIRRORS = (
+    "https://z.overpass-api.de/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+)
+# Some mirrors 406/403 a bare/default User-Agent — keep this meaningful.
+_OVERPASS_UA = "AI-Audio-Guide/1.0 (real-time walking audio guide; POI discovery)"
+
+
+def overpass_mirrors() -> list[str]:
+    """Configured endpoint first (operator intent), then the public fallbacks."""
+    out: list[str] = []
+    if settings.overpass_url:
+        out.append(settings.overpass_url)
+    for m in _FALLBACK_OVERPASS_MIRRORS:
+        if m not in out:
+            out.append(m)
+    return out
+
+
+async def fetch_overpass_elements(query: str, *, per_timeout: float = 11.0) -> list[dict]:
+    """POST a query to each mirror in turn; first JSON-200 wins. A slow/blocked
+    mirror fails over fast (per_timeout) instead of stalling the whole tick."""
+    last_exc: Exception | None = None
+    async with httpx.AsyncClient(
+        timeout=per_timeout, headers={"User-Agent": _OVERPASS_UA}
+    ) as client:
+        for url in overpass_mirrors():
+            try:
+                resp = await client.post(url, data={"data": query})
+                resp.raise_for_status()
+                return resp.json().get("elements", [])
+            except Exception as e:  # noqa: BLE001 — timeout/non-200/non-JSON -> next mirror
+                last_exc = e
+                continue
+    if last_exc is not None:
+        raise last_exc
+    return []
+
+
 # Short-lived cache of Overpass results, keyed by (rounded position, radius). A
 # walking user re-queries almost the same circle every tick; without this the heavy
 # multi-selector query (and its 1.5-8s latency) runs on every tick and every
@@ -128,12 +175,10 @@ class OverpassProvider:
         if hit is not None and now - hit[0] < _OVERPASS_CACHE_TTL_S:
             return hit[1]
         query = build_query(center, radius_m)
-        # 15s covers the mirror under normal load; bounded so a slow Overpass can't
-        # stack multi-minute stalls across adaptive-radius expansions.
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(self.url, data={"data": query})
-            resp.raise_for_status()
-            places = parse_elements(resp.json().get("elements", []), center)
+        # Multi-mirror with fast failover (see fetch_overpass_elements): a slow/down
+        # endpoint can't stack multi-minute stalls across adaptive-radius expansions.
+        elements = await fetch_overpass_elements(query)
+        places = parse_elements(elements, center)
         if len(_OVERPASS_CACHE) >= _OVERPASS_CACHE_MAX:
             _OVERPASS_CACHE.pop(next(iter(_OVERPASS_CACHE)), None)  # FIFO trim
         _OVERPASS_CACHE[key] = (now, places)

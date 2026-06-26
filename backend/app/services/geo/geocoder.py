@@ -13,10 +13,9 @@ from __future__ import annotations
 
 from typing import Protocol
 
-import httpx
-
-from app.config import settings
 from app.shared.schemas import Address, GeoPoint
+
+from .providers import fetch_overpass_elements
 
 
 class Geocoder(Protocol):
@@ -74,24 +73,22 @@ def parse_address(elements: list[dict], language: str = "ru") -> Address:
 
 
 class OverpassGeocoder:
-    def __init__(self, url: str | None = None) -> None:
-        self.url = url or settings.overpass_url
-
     @staticmethod
     def _query(point: GeoPoint) -> str:
         lat, lon = point.lat, point.lon
         return (
-            "[out:json][timeout:15];"
+            "[out:json][timeout:12];"
             f"is_in({lat},{lon})->.a;"
             "area.a[admin_level];out tags;"
             f"way(around:35,{lat},{lon})[highway][name];out tags 3;"
         )
 
     async def reverse(self, point: GeoPoint, language: str = "ru") -> Address:
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            resp = await client.post(self.url, data={"data": self._query(point)})
-            resp.raise_for_status()
-            return parse_address(resp.json().get("elements", []), language)
+        # Same multi-mirror failover as place discovery — geocoding shares the
+        # outage risk, so it must share the resilience (one slow mirror used to
+        # block the area intro and leave the guide silent).
+        elements = await fetch_overpass_elements(self._query(point))
+        return parse_address(elements, language)
 
 
 class MockGeocoder:
