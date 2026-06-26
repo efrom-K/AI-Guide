@@ -46,6 +46,21 @@ _CONVO_CAP = 20
 # is empty the guide keeps adding to the current place's story until the Narrator
 # runs out (returns silence), rather than going quiet after a couple of lines.
 _MAX_ELABORATE = 6
+# Connective area/city beats per lull, AFTER the planned outline is exhausted. Fills
+# the pauses with general stories about the district/city instead of going silent
+# (the "почти не переключалась, паузы хочется заполнять связками о районе" feedback).
+# Reset whenever a concrete object is narrated, so every lull gets a fresh budget.
+_MAX_AREA_BEATS = 10
+# Varied angles for those connective beats — rotated by beat index so they don't
+# repeat; the Narrator still dedups against `told`/history and stays facts-only.
+_CONNECTIVE_ANGLES = (
+    "история этого района или города",
+    "атмосфера, характер и облик этого места",
+    "чем район известен и чем живёт сегодня",
+    "любопытная деталь, легенда или история этого места",
+    "как этот район менялся со временем",
+    "известные люди, события или культурные связи этого места",
+)
 # Hard ceiling on the adaptive-radius discovery per tick. Discovery now makes at
 # most two Overpass calls (tight, then one wide), each with its own mirror-failover
 # timeout; this caps the pair so a tick can't stall for minutes in a sparse/foreign
@@ -203,6 +218,7 @@ class Orchestrator:
             st.last_place = out.place
             st.last_significance = out.significance
             st.elaboration_count = 0  # fresh place — allow follow-ups again
+            st.area_beats = 0  # fresh budget of connective area beats for the next lull
             plan.told = (plan.told + [out.place.name])[-_TOLD_CAP:]  # arc ledger (anti-repeat)
             plan.next_hook = None
             state = State.SWITCHING if switching else State.NARRATING
@@ -227,10 +243,14 @@ class Orchestrator:
         try:
             addr = await self.geocoder.reverse(position, st.language)
         except Exception:
+            return  # transient failure — retry next tick (don't advance last_geo_pos)
+        if not any((addr.country, addr.city, addr.district, addr.street)):
+            # Empty result (slow/uncovered geocoder): DON'T commit last_geo_pos, so the
+            # next tick retries immediately instead of locking out for geocoder_min_move_m.
+            # That was why early voice questions had no location until the user had walked
+            # ~150 m ("ответы не учитывали геолокацию, со временем начали").
             return
         st.last_geo_pos = position
-        if not any((addr.country, addr.city, addr.district, addr.street)):
-            return  # geocoder came back empty — keep whatever we had
         st.address = addr
         new_key = addr.district or addr.city
         if new_key and new_key != st.area_key:
@@ -322,7 +342,12 @@ class Orchestrator:
         focus = plan.pending_focus[0] if plan.pending_focus else None
         topic = focus or plan.next_topic()
         if topic is None:
-            return ""  # outline exhausted -> let elaborate/silence take over
+            # Outline done, still nothing new nearby: keep the tour alive with a
+            # connective area/city beat (varied angle) instead of going silent —
+            # bounded per lull so it can't ramble forever.
+            if st.area_beats >= _MAX_AREA_BEATS:
+                return ""  # budget spent -> let elaborate/silence take over
+            topic = _CONNECTIVE_ANGLES[st.area_beats % len(_CONNECTIVE_ANGLES)]
         if settings.area_enrich and st.area_facts is None:
             facts = await self.pipeline.enrich_area(
                 st.address, st.position, timeout_s=settings.enrich_timeout_s
@@ -344,6 +369,7 @@ class Orchestrator:
         except Exception:
             return ""
         if text:
+            st.area_beats += 1  # count this beat (gates the connective-beat budget)
             if focus:
                 plan.pending_focus.pop(0)  # answered/woven this user topic
             plan.told = (plan.told + [topic])[-_TOLD_CAP:]

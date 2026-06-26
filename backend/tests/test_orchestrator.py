@@ -3,14 +3,14 @@ from pathlib import Path
 
 from app.services.agent.companion import HeuristicCompanion
 from app.services.agent.narrator import TemplateNarrator
-from app.services.agent.orchestrator import Orchestrator, State, merge_patch
+from app.services.agent.orchestrator import _MAX_AREA_BEATS, Orchestrator, State, merge_patch
 from app.services.agent.pipeline import TextPipeline
 from app.services.agent.scorer import HeuristicScorer
 from app.services.enrichment.enricher import MockEnricher
 from app.services.geo.discovery import Discovery
 from app.services.geo.providers import StaticPlaceProvider
 from app.services.state.store import InMemoryStateStore
-from app.shared.schemas import ControlPatch, GeoPoint, Heading, Pace, Place
+from app.shared.schemas import Address, ControlPatch, GeoPoint, Heading, Pace, Place
 from sim.routes import RED_SQUARE
 from sim.walk import walk
 
@@ -122,3 +122,59 @@ def test_merge_patch_unions_and_overrides():
     assert set(merged.skip_categories) == {"shop", "cafe"}
     assert merged.verbosity == "shorter"
     assert merged.mute is True
+
+
+def test_geocoder_retries_after_empty_then_resolves():
+    """#2: an empty/failed first geocode must NOT lock last_geo_pos — otherwise the
+    address (and the companion's location-awareness) only resolves after walking
+    geocoder_min_move_m. The next tick at the SAME spot should retry and resolve."""
+
+    class FlakyGeo:
+        def __init__(self):
+            self.calls = 0
+
+        async def reverse(self, point, language="ru"):
+            self.calls += 1
+            return Address() if self.calls == 1 else Address(city="Москва", district="Тверской")
+
+    orch = _orch([])
+    geo = FlakyGeo()
+    orch.geocoder = geo
+
+    async def run():
+        st = await orch.store.load("geo-retry")
+        await orch._resolve_area(st, HERE)  # empty -> must not commit / not lock out
+        assert st.last_geo_pos is None
+        assert not any(
+            (st.address.country, st.address.city, st.address.district, st.address.street)
+        )
+        await orch._resolve_area(st, HERE)  # SAME spot: retries (not move-gated) -> resolves
+        assert geo.calls == 2
+        assert st.address.city == "Москва"
+        assert st.last_geo_pos is not None
+
+    asyncio.run(run())
+
+
+def test_connective_area_beats_fill_pause_until_budget():
+    """#1: once the planned outline is exhausted, the guide keeps filling the pause
+    with connective area/city beats (varied angles) up to a per-lull budget, instead
+    of going silent immediately."""
+    orch = _orch([])
+
+    async def fake_narrate_area(address, **kw):
+        return f"connective beat: {kw['topic']}"
+
+    orch.pipeline.narrate_area = fake_narrate_area
+
+    async def run():
+        st = await orch.store.load("conn")
+        st.address = Address(city="Москва", district="Тверской")
+        st.area_facts = ""  # skip the web-enrich path
+        produced = [await orch._area_line(st, Pace.SLOW) for _ in range(_MAX_AREA_BEATS + 2)]
+        nonempty = [t for t in produced if t]
+        assert len(nonempty) == _MAX_AREA_BEATS  # filled exactly the budget...
+        assert produced[_MAX_AREA_BEATS] == ""  # ...then silence
+        assert len(set(nonempty)) > 1  # varied angles, not the same line repeated
+
+    asyncio.run(run())
