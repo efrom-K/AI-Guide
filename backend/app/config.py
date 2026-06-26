@@ -90,13 +90,18 @@ class Settings(BaseSettings):
 
     # Behaviour
     default_language: str = "ru"
-    default_radius_m: float = 80.0
+    # Start the search at a medium radius so ONE Overpass query covers both dense
+    # city centres and spread-out suburbs (where the nearest object is 150-300 m
+    # away). Starting tiny (80 m) forced a slow expand-to-500 m chain in suburbs
+    # that blew the tick deadline → "talks about the district but never any object".
+    default_radius_m: float = 300.0
     max_radius_m: float = 500.0
-    # An object is only narrated as "right here" if it's within this radius. The
-    # discovery radius may expand wider to find context for the area monologue,
-    # but objects beyond weave_radius_m are NOT narrated as nearby (fixes the
-    # "guide talks about places that are too far away" complaint).
-    weave_radius_m: float = 120.0
+    # An object is narrated as "right here" if it's within this radius. 300 m is a
+    # few minutes' walk — fine for "ahead of you is …" — and it matches the default
+    # search radius so suburban objects actually get narrated, not just found. (A
+    # sparse-area fallback in the orchestrator still narrates the nearest object even
+    # beyond this, so the guide never goes silent when there IS something around.)
+    weave_radius_m: float = 300.0
     # Cap how many (nearest) candidates are considered per tick — bounds the
     # Scorer's input/output size (its JSON grows linearly with candidate count).
     scorer_max_candidates: int = 6

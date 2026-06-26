@@ -146,7 +146,7 @@ def overpass_mirrors() -> list[str]:
     return out
 
 
-async def fetch_overpass_elements(query: str, *, per_timeout: float = 11.0) -> list[dict]:
+async def fetch_overpass_elements(query: str, *, per_timeout: float = 8.0) -> list[dict]:
     """POST a query to each mirror in turn; first JSON-200 wins. A slow/blocked
     mirror fails over fast (per_timeout) instead of stalling the whole tick."""
     last_exc: Exception | None = None

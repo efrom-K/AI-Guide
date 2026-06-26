@@ -54,13 +54,17 @@ class Discovery:
         seen: list[str],
         radius_m: float,
     ) -> DiscoveryResult:
-        radius = radius_m
-        expanded = False
-        while True:
-            candidates = await self.discover(position, heading, seen, radius)
-            if candidates:
-                return DiscoveryResult(candidates, radius, expanded, exhausted=False)
-            if radius >= self.max_radius_m:
-                return DiscoveryResult([], radius, expanded, exhausted=True)
-            radius = min(radius * self.expand_factor, self.max_radius_m)
-            expanded = True
+        # One tight query (cheap, fast — covers dense city centres). If it's empty,
+        # jump STRAIGHT to the max radius in a single wide query instead of stepping
+        # 80 -> 200 -> 500: each step is a slow heavy Overpass call, and three of them
+        # in a sparse suburb blew the per-tick deadline, so objects never surfaced
+        # (the "talks about the district but never reaches any object" bug). At most
+        # two queries now; proximity is handled by ranking, not by re-querying.
+        candidates = await self.discover(position, heading, seen, radius_m)
+        if candidates:
+            return DiscoveryResult(candidates, radius_m, expanded=False, exhausted=False)
+        if radius_m >= self.max_radius_m:
+            return DiscoveryResult([], radius_m, expanded=False, exhausted=True)
+        wide = self.max_radius_m
+        candidates = await self.discover(position, heading, seen, wide)
+        return DiscoveryResult(candidates, wide, expanded=True, exhausted=not candidates)

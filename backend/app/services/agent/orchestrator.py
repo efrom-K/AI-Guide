@@ -46,11 +46,12 @@ _CONVO_CAP = 20
 # is empty the guide keeps adding to the current place's story until the Narrator
 # runs out (returns silence), rather than going quiet after a couple of lines.
 _MAX_ELABORATE = 6
-# Hard ceiling on the adaptive-radius discovery per tick. Overpass calls are bounded
-# individually, but a barren area chains several expansions; this caps the whole
-# search so a tick can't stall for minutes in a sparse/foreign place. On timeout we
+# Hard ceiling on the adaptive-radius discovery per tick. Discovery now makes at
+# most two Overpass calls (tight, then one wide), each with its own mirror-failover
+# timeout; this caps the pair so a tick can't stall for minutes in a sparse/foreign
+# place, while leaving enough room for the wide query + one failover. On timeout we
 # keep talking about the current place rather than going silent.
-_DISCOVERY_DEADLINE_S = 14.0
+_DISCOVERY_DEADLINE_S = 20.0
 
 
 class State(StrEnum):
@@ -157,11 +158,19 @@ class Orchestrator:
             return await self._continue_monologue(st, heading, pace)
         st.last_candidate_fingerprint = fp
 
-        # Weave gate: only objects within weave_radius_m are narrated as "right
-        # here"; anything farther (found by an expanded search) is left to the area
-        # monologue. Cap the count to bound the Scorer's input/output size.
+        # Weave gate: objects within weave_radius_m are narrated as "right here".
+        # Cap the count to bound the Scorer's input/output size.
         near = [c for c in result.candidates if c.distance_m <= settings.weave_radius_m]
         near = near[: settings.scorer_max_candidates]
+        # Sparse area (suburb/rural): nothing is within the weave radius, but the
+        # expanded search DID find objects farther out. Don't fall into an endless
+        # area monologue + radius expansion (the "rich district intro but never any
+        # objects" symptom) — narrate the nearest found objects instead. The Scorer
+        # and Narrator get their distance, so they phrase it as "ahead, ~300 m, ...".
+        if not near and result.candidates:
+            near = sorted(result.candidates, key=lambda c: c.distance_m)[
+                : settings.scorer_max_candidates
+            ]
         if not near:
             return await self._continue_monologue(st, heading, pace, expanded=result.expanded)
 
