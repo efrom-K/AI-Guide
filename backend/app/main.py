@@ -170,6 +170,7 @@ class _SessionRuntime:
         self.wake = asyncio.Event()  # context changed (new position / area / theme)
         self.resume = asyncio.Event()  # a barge-in finished; producer may continue
         self.barging = False
+        self.listening = False  # mic open: hold the producer so it can't talk over the user
         self.step_task: asyncio.Task | None = None
         self.send_lock = asyncio.Lock()
 
@@ -213,6 +214,10 @@ class _SessionRuntime:
                 self.step_task = None
 
     async def _step(self) -> None:
+        if self.listening:  # mic open — stay silent until the question is handled
+            self.wake.clear()
+            await self.resume.wait()
+            return
         if self.live_position is None:  # no GPS yet — idle until the first fix
             self.wake.clear()
             await self.wake.wait()
@@ -235,8 +240,25 @@ class _SessionRuntime:
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(self.played.wait(), timeout=fallback)
 
+    async def pause_for_listen(self) -> None:
+        """Mic opened (user about to ask): stop the producer's current step and hold,
+        so the guide can't keep talking over the question — and its own TTS doesn't
+        bleed into the recording. Released when the question is answered (or cancelled)."""
+        self.listening = True
+        self.barging = True
+        self.resume.clear()
+        if self.step_task is not None and not self.step_task.done():
+            self.step_task.cancel()
+
+    def resume_after_listen(self) -> None:
+        """Mic closed with nothing to ask (empty clip): let the tour continue."""
+        if self.listening:
+            self.listening = False
+            self.resume.set()
+
     async def handle_question(self, msg: dict, kind: str) -> None:
         """Top-priority barge-in: cancel the producer's current step, answer now."""
+        self.listening = True  # in case the mic-open signal was lost — hold either way
         self.barging = True
         self.resume.clear()
         SESSION_ID.set(self.session_id)  # attribute the answer's LLM cost to this session
@@ -251,16 +273,22 @@ class _SessionRuntime:
                     base64.b64decode(a.data_b64), language=st.language
                 )
                 await self.send_json({"type": "transcript", "text": text})
+                if not text.strip():  # nothing intelligible — say so instead of a vague reply
+                    await self.send_json(
+                        {"type": "error", "message": "Не расслышал — повтори, пожалуйста."}
+                    )
+                    return
             else:
                 text = WSUserUtterance.model_validate(msg).text
             out = await self.orch.on_utterance(self.session_id, text)
             await self.send_out(out)
         except Exception as e:  # noqa: BLE001 — a failed question must not drop the session
             _counters["question_errors"] += 1
-            _log.warning("question handling failed (%s): %s", self.session_id, e)
+            _log.warning("question handling failed (%s): %r", self.session_id, e)
             with contextlib.suppress(Exception):
                 await self.send_json({"type": "error", "message": "не расслышал, попробуй ещё раз"})
         finally:
+            self.listening = False
             self.resume.set()  # let the producer continue regardless
 
 
@@ -339,6 +367,12 @@ async def ws(websocket: WebSocket) -> None:
                 rt.wake.set()
             elif kind == "played":
                 rt.played.set()
+            elif kind == "listen":
+                # mic opened/closed on the client: pause the tour while the user speaks
+                if bool(msg.get("on")):
+                    await rt.pause_for_listen()
+                else:
+                    rt.resume_after_listen()
             elif kind in ("utterance", "audio"):
                 await rt.handle_question(msg, kind)
             elif kind == "language":

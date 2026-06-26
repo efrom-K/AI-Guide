@@ -55,6 +55,40 @@ def test_ws_audio_transcribes_then_replies():
         assert reply["text"]
 
 
+def test_ws_audio_empty_transcript_errors():
+    # Whisper heard nothing intelligible -> say so, don't answer a blank question
+    # (which used to produce a vague "ок, продолжим" that felt like no answer).
+    client = _heuristic_app(stt_text="   ")
+    with client.websocket_connect("/ws") as ws:
+        clip = base64.b64encode(b"silence").decode()
+        ws.send_json({"type": "audio", "data_b64": clip, "format": "wav"})
+        assert ws.receive_json()["type"] == "transcript"
+        err = ws.receive_json()
+        assert err["type"] == "error"
+        assert "расслыш" in err["message"].lower()
+
+
+def test_ws_listen_pauses_then_question_resumes():
+    # Opening the mic ("listen on") must hold the producer so it can't narrate over
+    # the user; the answered question then resumes the tour.
+    client = _heuristic_app(stt_text="пропускай магазины")
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "listen", "on": True})
+        # position arrives while listening -> no narration is emitted (producer held)
+        ws.send_json(
+            {"type": "position", "lat": 55.7525, "lon": 37.6231, "gaze_confidence": "low"}
+        )
+        clip = base64.b64encode(b"fake-audio").decode()
+        ws.send_json({"type": "audio", "data_b64": clip, "format": "wav"})
+        assert ws.receive_json()["type"] == "transcript"
+        assert ws.receive_json()["type"] == "state"
+        reply = ws.receive_json()
+        assert reply["type"] == "reply" and reply["text"]
+        # tour resumes after answering
+        assert ws.receive_json()["type"] == "state"
+        assert ws.receive_json()["type"] == "narration"
+
+
 def test_ws_unknown_type_errors():
     client = _heuristic_app()
     with client.websocket_connect("/ws") as ws:

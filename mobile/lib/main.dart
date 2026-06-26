@@ -288,6 +288,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   // paragraphs are paced by the server via the `played` signal; with the voice
   // muted we still ack narration so the story keeps flowing on screen.
   void _enqueueSpeech(String text, {required bool isNarration}) {
+    // Mic open: never speak a narration over the user. The server is already
+    // paused, so don't ack `played` either — just drop this stray paragraph.
+    if (_recording && isNarration) return;
     if (!_voice) {
       if (isNarration) _send({'type': 'played'});
       return;
@@ -693,7 +696,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _add('meta', l.metaMicNoPermission);
       return;
     }
-    _hush(); // barge-in: stop the guide and listen
+    _hush(); // barge-in: stop the guide locally...
+    _send({'type': 'listen', 'on': true}); // ...and tell the server to hold the tour
     _audioBuf.clear();
     try {
       // Stream PCM into memory — works on web AND mobile (no path_provider /
@@ -705,6 +709,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _audioSub = stream.listen(_audioBuf.addAll);
       setState(() => _recording = true);
     } catch (e) {
+      _send({'type': 'listen', 'on': false}); // mic failed — let the tour resume
       _add('meta', '⚠ ${l.metaMicNoPermission}');
     }
   }
@@ -715,9 +720,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     await _audioSub?.cancel();
     _audioSub = null;
     setState(() => _recording = false);
-    if (_audioBuf.isEmpty) return;
+    if (_audioBuf.isEmpty) {
+      _send({'type': 'listen', 'on': false}); // nothing captured — resume the tour
+      return;
+    }
     final wav = _wavFromPcm16(_audioBuf, sampleRate: 16000, channels: 1);
     _audioBuf.clear();
+    // The audio frame is itself the barge-in; the server answers then resumes.
     _send({'type': 'audio', 'data_b64': base64Encode(wav), 'format': 'wav'});
     _add('meta', l.metaSentByVoice(wav.length));
   }
