@@ -46,12 +46,14 @@ _CONVO_CAP = 20
 # details is enough — beyond that the guide starts mussing the same place, which
 # is exactly the "цепляет одну тему и мусолит её" complaint.
 _MAX_ELABORATE = 2
-# Connective area/city beats per lull, AFTER the planned outline is exhausted. These
-# only fire when we have REAL verified area facts to ground them (see _area_line);
-# ungrounded generic beats are the boring "по кругу" rambling, so without facts the
-# guide says one short "пройдём дальше" bridge and goes quiet instead.
-# Reset whenever a concrete object is narrated, so every lull gets a fresh budget.
-_MAX_AREA_BEATS = 3
+# The gap-filler monologue is a city -> district -> street CASCADE: at each level the
+# guide tells atypical facts until that level runs out of NEW ones (the Narrator
+# returns [SILENCE]), then descends a level; after the street is exhausted it goes
+# quiet (a short "пройдём дальше" bridge) — by then the walker is usually onto a new
+# street/district, which restarts the cascade. This replaces the old flat "connective
+# angles", which rambled in circles ("мусолит одну тему") or bailed to silence too fast.
+_BEATS_PER_LEVEL = 3  # soft cap of facts per level before descending (no-repeat trims it)
+_LEVEL_ATTEMPTS_PER_TICK = 3  # one lull tick may descend city->district->street if dry
 # Short spoken bridges for when the area material is exhausted and nothing is near:
 # say one ("пройдём дальше") and then go genuinely silent, rather than filler.
 _BRIDGES = (
@@ -59,16 +61,6 @@ _BRIDGES = (
     "Пройдём дальше, тут пока тихо.",
     "Двигаемся дальше.",
     "Идём дальше — расскажу, как только будет что.",
-)
-# Varied angles for those connective beats — rotated by beat index so they don't
-# repeat; the Narrator still dedups against `told`/history and stays facts-only.
-_CONNECTIVE_ANGLES = (
-    "история этого района или города",
-    "атмосфера, характер и облик этого места",
-    "чем район известен и чем живёт сегодня",
-    "любопытная деталь, легенда или история этого места",
-    "как этот район менялся со временем",
-    "известные люди, события или культурные связи этого места",
 )
 # Hard ceiling on the adaptive-radius discovery per tick. Discovery now makes at
 # most two Overpass calls (tight, then one wide), each with its own mirror-failover
@@ -289,6 +281,8 @@ class Orchestrator:
             st.area_intro_done = False
             st.area_beats = 0
             st.area_bridge_said = False
+            st.area_level = 0  # new area -> restart the city->district->street cascade
+            st.area_level_beats = 0
             # fresh area => fresh story arc, but keep the user's chosen theme (if any)
             st.narrative_plan = NarrativePlan(theme_override=st.narrative_plan.theme_override)
             st.last_street = addr.street  # adopt silently; the area opener covers arrival
@@ -298,6 +292,11 @@ class Orchestrator:
             # next-paragraph baton ("свернув на …"), instead of a hard area intro.
             st.last_street = addr.street
             st.narrative_plan.next_hook = f"переход на улицу {addr.street}"
+            # Re-arm the cascade so the fresh street gets its own facts (city/district
+            # already in HISTORY -> the no-repeat rule silences them and it descends).
+            st.area_level = 0
+            st.area_level_beats = 0
+            st.area_bridge_said = False
 
     def _has_area(self, st) -> bool:
         a = st.address
@@ -382,27 +381,63 @@ class Orchestrator:
         state = State.EXPANDING if expanded else State.IDLE
         return await self._finish(st, state, "silence")
 
-    # one beat of the area story arc: pick the next topic (a user-asked focus wins,
-    # else the next un-told outline topic), lazily fetch area facts, then narrate.
+    # One beat of the gap-filler monologue. Order: (1) a topic the user asked about,
+    # (2) the next un-told outline topic from the plan, then (3) the city->district->
+    # street cascade — atypical facts at one level until it's dry, then descend. The
+    # no-repeat rule (CORE) makes a dry level return [SILENCE], which we read as
+    # "go down a level". After the street is exhausted the caller bridges + goes quiet.
     async def _area_line(self, st, pace: Pace) -> str:
         plan = st.narrative_plan
-        focus = plan.pending_focus[0] if plan.pending_focus else None
-        topic = focus or plan.next_topic()
-        # Fetch verified area facts once, up front — they both enrich the outline beats
-        # and decide whether a connective beat is grounded enough to be worth saying.
+        # Fetch verified area facts once, up front (used to ground every beat).
         if settings.area_enrich and st.area_facts is None:
             facts = await self.pipeline.enrich_area(
                 st.address, st.position, timeout_s=settings.enrich_timeout_s
             )
             st.area_facts = facts or ""  # cache "" so we don't refetch every beat
-        if topic is None:
-            # Outline delivered. Keep going with a connective beat ONLY when we have
-            # REAL facts to ground it (and only briefly) — ungrounded generic beats are
-            # the boring "по кругу" rambling. Without facts, return "" so the caller
-            # bridges with "пройдём дальше" and goes quiet.
-            if not st.area_facts or st.area_beats >= _MAX_AREA_BEATS:
-                return ""
-            topic = _CONNECTIVE_ANGLES[st.area_beats % len(_CONNECTIVE_ANGLES)]
+
+        # (1)/(2) user focus, else the planned outline.
+        focus = plan.pending_focus[0] if plan.pending_focus else None
+        topic = focus or plan.next_topic()
+        if topic is not None:
+            return await self._emit_area_beat(st, topic, focus=focus, pace=pace)
+
+        # (3) cascade: try the current level; if it has no NEW fact (silence), descend
+        # and try the next — bounded per tick so a fully-dry area doesn't burn calls.
+        levels = self._area_levels(st)
+        attempts = 0
+        while st.area_level < len(levels) and attempts < _LEVEL_ATTEMPTS_PER_TICK:
+            if st.area_level_beats >= _BEATS_PER_LEVEL:
+                st.area_level += 1
+                st.area_level_beats = 0
+                continue
+            label, name = levels[st.area_level]
+            topic = (
+                f"ещё один неочевидный, нетипичный факт про {label} {name} — "
+                "то, чего обычно не знают; без банальностей и без повторов"
+            )
+            text = await self._emit_area_beat(st, topic, focus=None, pace=pace)
+            attempts += 1
+            if text:
+                st.area_level_beats += 1
+                return text
+            st.area_level += 1  # this level is out of new facts -> go a level deeper
+            st.area_level_beats = 0
+        return ""
+
+    def _area_levels(self, st) -> list[tuple[str, str]]:
+        """The (label, name) levels to descend through, broadest first."""
+        a = st.address
+        levels: list[tuple[str, str]] = []
+        if a.city:
+            levels.append(("город", a.city))
+        if a.district:
+            levels.append(("район", a.district))
+        if a.street:
+            levels.append(("улицу", a.street))
+        return levels
+
+    async def _emit_area_beat(self, st, topic: str, *, focus: str | None, pace: Pace) -> str:
+        plan = st.narrative_plan
         try:
             text, hook = await self.pipeline.narrate_area(
                 st.address,
@@ -419,7 +454,7 @@ class Orchestrator:
         except Exception:
             return ""
         if text:
-            st.area_beats += 1  # count this beat (gates the connective-beat budget)
+            st.area_beats += 1
             st.area_bridge_said = False  # real content flowed -> allow a later bridge
             if focus:
                 plan.pending_focus.pop(0)  # answered/woven this user topic

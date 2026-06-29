@@ -253,6 +253,10 @@ class SessionState(BaseModel):
     area_intro_done: bool = False  # the area opener (+ plan) was already delivered
     area_beats: int = 0  # area beats told in the current area (variety + bound)
     area_bridge_said: bool = False  # a "пройдём дальше" bridge already closed this lull
+    # city -> district -> street cascade for the gap-filler monologue: keep telling
+    # atypical facts at one level, descend when it runs dry, go quiet after street.
+    area_level: int = 0  # 0=city, 1=district, 2=street (index into the levels present)
+    area_level_beats: int = 0  # facts told at the current level (per-level soft budget)
     # the story arc — formed when an area is entered, augmented along the route
     narrative_plan: NarrativePlan = Field(default_factory=NarrativePlan)
     state: str = "idle"  # FSM state name

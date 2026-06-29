@@ -4,7 +4,7 @@ from pathlib import Path
 from app.config import settings
 from app.services.agent.companion import HeuristicCompanion
 from app.services.agent.narrator import TemplateNarrator
-from app.services.agent.orchestrator import _MAX_AREA_BEATS, Orchestrator, State, merge_patch
+from app.services.agent.orchestrator import _BEATS_PER_LEVEL, Orchestrator, State, merge_patch
 from app.services.agent.pipeline import TextPipeline
 from app.services.agent.scorer import HeuristicScorer
 from app.services.enrichment.enricher import MockEnricher
@@ -274,30 +274,51 @@ def test_warm_ahead_caches_cone_first_then_nearby_nonblocking():
     asyncio.run(run())
 
 
-def test_connective_area_beats_only_when_facts_then_bounded():
-    """#1: once the planned outline is exhausted, connective area beats fire ONLY when
-    there are real verified area facts to ground them (else the guide bridges + goes
-    quiet, not ramble), and even then they're bounded to a per-lull budget."""
+def test_area_cascade_descends_city_to_district_to_street():
+    """Once the outline is exhausted the gap-filler cascades city -> district ->
+    street: a level with no NEW fact (the Narrator returns [SILENCE]) is skipped and
+    the next, deeper level is tried — within a single lull tick — so the guide keeps
+    talking about where you actually are instead of going quiet after one line."""
     orch = _orch([])
 
     async def fake_narrate_area(address, **kw):
-        return f"connective beat: {kw['topic']}", None  # (spoken, next_hook)
+        topic = kw["topic"]
+        if "про город" in topic or "про район" in topic:
+            return "", None  # city + district are dry (no new facts)
+        return f"улица: {topic[:18]}", None  # the street still has something to say
 
     orch.pipeline.narrate_area = fake_narrate_area
 
     async def run():
-        st = await orch.store.load("conn")
-        st.address = Address(city="Москва", district="Тверской")
-        # No real facts -> ungrounded generic beats are suppressed (anti-ramble).
+        st = await orch.store.load("casc")
+        st.address = Address(city="Москва", district="Тверской", street="Тверская")
         st.area_facts = ""
-        assert await orch._area_line(st, Pace.SLOW) == ""
-        # Real facts -> connective beats fire, varied, bounded to the budget.
-        st.area_facts = "Тверской район вырос вокруг ямской слободы XVII века."
-        produced = [await orch._area_line(st, Pace.SLOW) for _ in range(_MAX_AREA_BEATS + 2)]
+        out = await orch._area_line(st, Pace.SLOW)
+        assert out.startswith("улица:")  # descended past the dry city/district
+        assert st.area_level == 2  # landed on the street level
+
+    asyncio.run(run())
+
+
+def test_area_cascade_bounded_per_level_then_silent():
+    """Each level yields at most a few facts (per-level soft budget); once the only
+    level is spent and there's nowhere deeper to go, the beat returns "" so the caller
+    bridges with 'пройдём дальше' and goes quiet — no endless rambling."""
+    orch = _orch([])
+
+    async def fake_narrate_area(address, **kw):
+        return f"beat: {kw['topic'][:20]}", None  # this level always has another fact
+
+    orch.pipeline.narrate_area = fake_narrate_area
+
+    async def run():
+        st = await orch.store.load("casc2")
+        st.address = Address(city="Москва")  # a single level (city)
+        st.area_facts = ""
+        produced = [await orch._area_line(st, Pace.SLOW) for _ in range(_BEATS_PER_LEVEL + 2)]
         nonempty = [t for t in produced if t]
-        assert len(nonempty) == _MAX_AREA_BEATS  # filled exactly the budget...
-        assert produced[_MAX_AREA_BEATS] == ""  # ...then silence
-        assert len(set(nonempty)) > 1  # varied angles, not the same line repeated
+        assert len(nonempty) == _BEATS_PER_LEVEL  # filled the per-level budget...
+        assert produced[_BEATS_PER_LEVEL] == ""  # ...then quiet (nowhere deeper)
 
     asyncio.run(run())
 
