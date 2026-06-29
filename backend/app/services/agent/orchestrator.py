@@ -42,15 +42,24 @@ _HISTORY_CAP = 12
 _SEEN_CAP = 600  # cap the dedup list so a long walk can't grow session state unbounded
 _TOLD_CAP = 80  # cap the arc's covered-topics ledger
 _CONVO_CAP = 20
-# Follow-ups per place when nothing new is nearby. High on purpose: while the area
-# is empty the guide keeps adding to the current place's story until the Narrator
-# runs out (returns silence), rather than going quiet after a couple of lines.
-_MAX_ELABORATE = 6
-# Connective area/city beats per lull, AFTER the planned outline is exhausted. Fills
-# the pauses with general stories about the district/city instead of going silent
-# (the "почти не переключалась, паузы хочется заполнять связками о районе" feedback).
+# Follow-ups per place when nothing new is nearby. Kept low: a couple of extra
+# details is enough — beyond that the guide starts mussing the same place, which
+# is exactly the "цепляет одну тему и мусолит её" complaint.
+_MAX_ELABORATE = 2
+# Connective area/city beats per lull, AFTER the planned outline is exhausted. These
+# only fire when we have REAL verified area facts to ground them (see _area_line);
+# ungrounded generic beats are the boring "по кругу" rambling, so without facts the
+# guide says one short "пройдём дальше" bridge and goes quiet instead.
 # Reset whenever a concrete object is narrated, so every lull gets a fresh budget.
-_MAX_AREA_BEATS = 10
+_MAX_AREA_BEATS = 3
+# Short spoken bridges for when the area material is exhausted and nothing is near:
+# say one ("пройдём дальше") and then go genuinely silent, rather than filler.
+_BRIDGES = (
+    "Идём дальше.",
+    "Пройдём дальше, тут пока тихо.",
+    "Двигаемся дальше.",
+    "Идём дальше — расскажу, как только будет что.",
+)
 # Varied angles for those connective beats — rotated by beat index so they don't
 # repeat; the Narrator still dedups against `told`/history and stays facts-only.
 _CONNECTIVE_ANGLES = (
@@ -94,8 +103,19 @@ class OrchestratorOutput:
     lon: float | None = None
 
 
-def fingerprint(candidates: list[Candidate]) -> str:
-    return ",".join(sorted(c.place.id for c in candidates))
+def fingerprint(candidates: list[Candidate], cache=None) -> str:
+    """A stable signature of the bubble set used to gate the LLM. When a fact `cache`
+    is given it's FACTS-AWARE: each id is tagged with whether its facts are cached yet.
+    That keeps the gate stable for a genuinely factless object (no LLM re-call every
+    tick), but RE-OPENS it the instant warm_ahead caches facts for a passing object
+    whose facts were cold when it entered the bubble — so "walk up to a monument -> it
+    gets narrated" is reliable instead of being burned forever by the first cold miss."""
+    if cache is None:
+        return ",".join(sorted(c.place.id for c in candidates))
+    return ",".join(
+        f"{c.place.id}:{int(cache.get(c.place.id) is not None)}"
+        for c in sorted(candidates, key=lambda c: c.place.id)
+    )
 
 
 def merge_patch(base: ControlPatch, patch: ControlPatch) -> ControlPatch:
@@ -184,10 +204,11 @@ class Orchestrator:
 
         # Gate on the BUBBLE set (not the wide window): skip the LLM when the same
         # object is still in the bubble (standing next to it) or the bubble is empty
-        # -> advance the area spine instead. Fingerprinting the bubble (not the 300 m
-        # window) is what lets an object that has been approaching for many ticks
-        # fire the instant it enters the bubble.
-        fp = fingerprint(near)
+        # -> advance the area spine instead. The fingerprint is FACTS-AWARE (see
+        # `fingerprint`): it re-opens when warm_ahead caches facts for a passing object
+        # whose facts were cold on arrival, so the object is reliably picked up instead
+        # of being burned forever by the first cold-facts miss.
+        fp = fingerprint(near, self.pipeline.cache)
         gated = fp == st.last_candidate_fingerprint and not result.expanded
         st.last_candidate_fingerprint = fp
         if not near or gated:
@@ -211,6 +232,7 @@ class Orchestrator:
                 theme=plan.active_theme() or None,
                 told=plan.told,
                 next_hook=plan.next_hook,
+                passing=True,  # the user is right beside this object — introduce it, don't skip
             )
         except Exception:
             return await self._finish(st, State.ERROR, "error")
@@ -223,6 +245,7 @@ class Orchestrator:
             st.last_significance = out.significance
             st.elaboration_count = 0  # fresh place — allow follow-ups again
             st.area_beats = 0  # fresh budget of connective area beats for the next lull
+            st.area_bridge_said = False  # let a future lull say "пройдём дальше" again
             plan.told = (plan.told + [out.place.name])[-_TOLD_CAP:]  # arc ledger (anti-repeat)
             plan.next_hook = out.next_hook  # baton: weave this into the next paragraph
             state = State.SWITCHING if switching else State.NARRATING
@@ -230,6 +253,9 @@ class Orchestrator:
                 st, state, "narration", out.text, out.place, out.significance
             )
 
+        # Passing object yielded silence (cold facts / nothing to say). The fp is
+        # facts-aware, so once warm_ahead caches its facts the gate re-opens and the
+        # next tick narrates it. Carry the area spine meanwhile.
         return await self._continue_monologue(st, heading, pace, expanded=result.expanded)
 
     # -- area resolution (general -> specific spine) ------------------------ #
@@ -262,6 +288,7 @@ class Orchestrator:
             st.area_facts = None
             st.area_intro_done = False
             st.area_beats = 0
+            st.area_bridge_said = False
             # fresh area => fresh story arc, but keep the user's chosen theme (if any)
             st.narrative_plan = NarrativePlan(theme_override=st.narrative_plan.theme_override)
             st.last_street = addr.street  # adopt silently; the area opener covers arrival
@@ -309,18 +336,19 @@ class Orchestrator:
         return await self._finish(st, State.NARRATING, "narration", opener)
 
     # When nothing new is nearby, carry the story arc: advance the area outline by
-    # one topic (or weave a topic the user asked about), then fall back to
-    # elaborating the last object, and only then go silent.
+    # one topic (or weave a topic the user asked about), then a couple of follow-ups
+    # on the last object, then a short "пройдём дальше" bridge, and only then silence.
     async def _continue_monologue(
         self, st, heading: Heading, pace: Pace, *, expanded: bool = False
     ) -> OrchestratorOutput:
-        # 1) advance the area story arc by one topic
+        # 1) advance the area story arc by one topic (outline, then briefly grounded
+        #    connective beats — see _area_line; ungrounded filler is suppressed there)
         if self._has_area(st):
             text = await self._area_line(st, pace)
             if text:
                 return await self._finish(st, State.NARRATING, "narration", text)
 
-        # 2) fall back to telling MORE about the last object
+        # 2) fall back to telling MORE about the last object (bounded tightly)
         if st.last_place is not None and st.elaboration_count < _MAX_ELABORATE:
             try:
                 text = await self.pipeline.elaborate(
@@ -343,6 +371,14 @@ class Orchestrator:
                 )
             st.elaboration_count = _MAX_ELABORATE  # nothing more to add — stop trying
 
+        # 3) genuinely nothing to say: say one short bridge ("пройдём дальше") and then
+        #    go quiet, instead of mussing the same topic in circles. One per lull.
+        if self._has_area(st) and not st.area_bridge_said:
+            st.area_bridge_said = True
+            bridge = _BRIDGES[st.area_beats % len(_BRIDGES)]
+            st.narration_history = (st.narration_history + [bridge])[-_HISTORY_CAP:]
+            return await self._finish(st, State.IDLE, "narration", bridge)
+
         state = State.EXPANDING if expanded else State.IDLE
         return await self._finish(st, state, "silence")
 
@@ -352,18 +388,21 @@ class Orchestrator:
         plan = st.narrative_plan
         focus = plan.pending_focus[0] if plan.pending_focus else None
         topic = focus or plan.next_topic()
-        if topic is None:
-            # Outline done, still nothing new nearby: keep the tour alive with a
-            # connective area/city beat (varied angle) instead of going silent —
-            # bounded per lull so it can't ramble forever.
-            if st.area_beats >= _MAX_AREA_BEATS:
-                return ""  # budget spent -> let elaborate/silence take over
-            topic = _CONNECTIVE_ANGLES[st.area_beats % len(_CONNECTIVE_ANGLES)]
+        # Fetch verified area facts once, up front — they both enrich the outline beats
+        # and decide whether a connective beat is grounded enough to be worth saying.
         if settings.area_enrich and st.area_facts is None:
             facts = await self.pipeline.enrich_area(
                 st.address, st.position, timeout_s=settings.enrich_timeout_s
             )
             st.area_facts = facts or ""  # cache "" so we don't refetch every beat
+        if topic is None:
+            # Outline delivered. Keep going with a connective beat ONLY when we have
+            # REAL facts to ground it (and only briefly) — ungrounded generic beats are
+            # the boring "по кругу" rambling. Without facts, return "" so the caller
+            # bridges with "пройдём дальше" and goes quiet.
+            if not st.area_facts or st.area_beats >= _MAX_AREA_BEATS:
+                return ""
+            topic = _CONNECTIVE_ANGLES[st.area_beats % len(_CONNECTIVE_ANGLES)]
         try:
             text, hook = await self.pipeline.narrate_area(
                 st.address,
@@ -381,6 +420,7 @@ class Orchestrator:
             return ""
         if text:
             st.area_beats += 1  # count this beat (gates the connective-beat budget)
+            st.area_bridge_said = False  # real content flowed -> allow a later bridge
             if focus:
                 plan.pending_focus.pop(0)  # answered/woven this user topic
             plan.told = (plan.told + [topic])[-_TOLD_CAP:]

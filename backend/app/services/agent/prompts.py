@@ -112,6 +112,7 @@ def build_narrator_user(inp: NarratorInput) -> str:
                 "switching": inp.flags.switching,
                 "nothing_new": inp.flags.nothing_new,
                 "elaborate": inp.flags.elaborate,
+                "passing": inp.flags.passing,
                 "preferences": (
                     inp.flags.preferences.model_dump() if inp.flags.preferences else None
                 ),

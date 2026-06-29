@@ -274,10 +274,10 @@ def test_warm_ahead_caches_cone_first_then_nearby_nonblocking():
     asyncio.run(run())
 
 
-def test_connective_area_beats_fill_pause_until_budget():
-    """#1: once the planned outline is exhausted, the guide keeps filling the pause
-    with connective area/city beats (varied angles) up to a per-lull budget, instead
-    of going silent immediately."""
+def test_connective_area_beats_only_when_facts_then_bounded():
+    """#1: once the planned outline is exhausted, connective area beats fire ONLY when
+    there are real verified area facts to ground them (else the guide bridges + goes
+    quiet, not ramble), and even then they're bounded to a per-lull budget."""
     orch = _orch([])
 
     async def fake_narrate_area(address, **kw):
@@ -288,11 +288,39 @@ def test_connective_area_beats_fill_pause_until_budget():
     async def run():
         st = await orch.store.load("conn")
         st.address = Address(city="Москва", district="Тверской")
-        st.area_facts = ""  # skip the web-enrich path
+        # No real facts -> ungrounded generic beats are suppressed (anti-ramble).
+        st.area_facts = ""
+        assert await orch._area_line(st, Pace.SLOW) == ""
+        # Real facts -> connective beats fire, varied, bounded to the budget.
+        st.area_facts = "Тверской район вырос вокруг ямской слободы XVII века."
         produced = [await orch._area_line(st, Pace.SLOW) for _ in range(_MAX_AREA_BEATS + 2)]
         nonempty = [t for t in produced if t]
         assert len(nonempty) == _MAX_AREA_BEATS  # filled exactly the budget...
         assert produced[_MAX_AREA_BEATS] == ""  # ...then silence
         assert len(set(nonempty)) > 1  # varied angles, not the same line repeated
+
+    asyncio.run(run())
+
+
+def test_passing_object_narrated_once_facts_warm_not_burned_by_gate():
+    """Issue: a passing object whose facts were cold when it entered the bubble must
+    NOT be permanently gated out. The facts-aware fingerprint re-opens the gate when
+    warm_ahead caches facts, so the guide reliably picks up an object you walk up to
+    (the "10 минут вокруг памятника, так и не рассказал" bug)."""
+    p = _place("mon", "Памятник Пушкину", "monument")  # at HERE
+
+    async def run():
+        orch = _orch([p], facts={})  # cold: no facts on the first approach
+        near = GeoPoint(lat=HERE.lat + 0.00035, lon=HERE.lon)  # ~39 m: in the bubble
+
+        # Tick 1: facts cold -> TemplateNarrator stays silent; object NOT narrated.
+        o1 = await orch.on_position("s", near, Heading(), Pace.SLOW)
+        assert o1.place_id != "mon"
+
+        # warm_ahead caches facts between ticks -> the facts-aware fingerprint changes,
+        # re-opening the gate (a plain id fingerprint would have stayed burned).
+        orch.pipeline.cache.put("mon", "Памятник поставлен в 1880 году.")
+        o2 = await orch.on_position("s", near, Heading(), Pace.SLOW)
+        assert o2.kind == "narration" and o2.place_id == "mon"
 
     asyncio.run(run())

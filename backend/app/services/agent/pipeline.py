@@ -134,6 +134,7 @@ class TextPipeline:
         theme: str | None = None,
         told: list[str] | None = None,
         next_hook: str | None = None,
+        passing: bool = False,
     ) -> StepResult:
         """Narrate the nearest weave-worthy object, woven INTO the story arc.
 
@@ -181,6 +182,7 @@ class TextPipeline:
                 flags=NarratorFlags(
                     switching=switching,
                     nothing_new=not candidates,
+                    passing=passing,
                     preferences=preferences,
                 ),
                 language=lang,

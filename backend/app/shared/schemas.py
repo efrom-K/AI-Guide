@@ -127,6 +127,7 @@ class NarratorFlags(BaseModel):
     switching: bool = False
     nothing_new: bool = False
     elaborate: bool = False  # tell MORE about an already-covered place (nothing new nearby)
+    passing: bool = False  # user is right beside this object — introduce it, never SKIP
     preferences: ControlPatch | None = None
 
 
@@ -251,6 +252,7 @@ class SessionState(BaseModel):
     area_facts: str | None = None  # verified facts about the current area (fetched once)
     area_intro_done: bool = False  # the area opener (+ plan) was already delivered
     area_beats: int = 0  # area beats told in the current area (variety + bound)
+    area_bridge_said: bool = False  # a "пройдём дальше" bridge already closed this lull
     # the story arc — formed when an area is entered, augmented along the route
     narrative_plan: NarrativePlan = Field(default_factory=NarrativePlan)
     state: str = "idle"  # FSM state name
