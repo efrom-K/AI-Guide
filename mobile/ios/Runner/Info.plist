@@ -66,11 +66,13 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<!-- Permissions shown to the user when the guide needs them -->
+	<!-- Permissions shown to the user when the guide needs them. English is used as the
+	     base (App Store review language); the in-app UI itself is fully localized. To
+	     localize these system dialogs too, add <lang>.lproj/InfoPlist.strings files. -->
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Показывает ваше место на карте и рассказывает о том, что вокруг.</string>
+	<string>Shows your location on the map and tells you about the places around you.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Чтобы задать гиду вопрос голосом.</string>
+	<string>Lets you ask the guide a question by voice.</string>
 	<!-- Allow ws:// (cleartext) for LAN/dev testing. For an App Store build with a
 	     wss:// host you can remove this and rely on default ATS (TLS only). -->
 	<key>NSAppTransportSecurity</key>

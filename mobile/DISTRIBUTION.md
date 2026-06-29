@@ -14,7 +14,8 @@ flutter build ipa     --release --dart-define=WS_URL=wss://178.83.121.62.sslip.i
 ```
 
 - No `--dart-define` → falls back to `ws://localhost:8000/ws` (dev/emulator).
-- The tester can still override it in the app: **⚙ Settings → WebSocket URL**.
+- The host is **baked in at build time** — there is no in-app server-URL field (it was removed
+  for the MVP). To point a build at a different host, rebuild with a different `--dart-define`.
 - `ws://` (no TLS) also works — Android allows cleartext (`usesCleartextTraffic`) and iOS has
   an ATS exception in `Info.plist`. For an **App Store** build with a `wss://` host, remove the
   `NSAllowsArbitraryLoads` exception so iOS uses TLS-only.
@@ -80,7 +81,8 @@ flutter run --release -d <iphone-id> --dart-define=WS_URL=wss://178.83.121.62.ss
 First launch: on the iPhone go to **Settings → General → VPN & Device Management → trust your
 developer cert**, reopen the app, and **allow Location + Microphone** when prompted. (You can
 also just hit ▶ Run in Xcode — but then set WS_URL via Product → Scheme → Run → Arguments:
-`--dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws`, or it defaults to localhost.)
+`--dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws`, or it defaults to localhost. There is
+no in-app URL field, so the `--dart-define` is the only way to set the host.)
 
 ### 3b. TestFlight — to send to other testers (needs a paid Apple Developer account, $99/yr)
 ```bash
@@ -91,10 +93,16 @@ flutter build ipa --release --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws
 
 ### Gotchas
 - **`flutter run` defaults to `ws://localhost:8000/ws`** if you forget the `--dart-define` — the
-  app then can't reach the backend. Always pass the `WS_URL`. (Testers can also override it in
-  the app: **⚙ Settings → WebSocket URL**.)
+  app then can't reach the backend. Always pass the `WS_URL` (there is no in-app URL field to
+  fix it afterwards — you must rebuild).
 - If pods are stale after a Flutter/plugin change: `cd ios && pod repo update && pod install`.
 - Test on **mobile data**, not Wi-Fi — that's what reproduces real connection conditions.
+- **Background audio (known follow-up, not done):** iOS pauses the narration when the screen
+  locks. To keep the guide talking with the phone in a pocket, add `UIBackgroundModes` → `audio`
+  to `Info.plist` **and** configure an `AVAudioSession` playback category (e.g.
+  `flutter_tts.setIosAudioCategory(...)`). Don't add the background mode alone — Apple rejects a
+  declared capability the app doesn't actually use. Fine to leave for the first TestFlight (the
+  guide works foregrounded with the screen on).
 
 ### Alternative: Codemagic (cloud build, no Mac needed)
 `codemagic.yaml` (in this folder) has three ready workflows: `android-test`, `ios-testflight`
