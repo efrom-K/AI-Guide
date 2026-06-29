@@ -76,6 +76,7 @@ const _cardBg = Color(0xF21A1B1F); // glassy dark card over the map
 const _pillBg = Color(0xCC18191D);
 const _pinCurrent = Color(0xFFFBBF24); // amber — the place being narrated
 const _pinPast = Color(0xFF64748B); // slate — already seen
+const _pinLite = Color(0x553B82F6); // faint blue — found-but-not-narrated (inventory)
 const _userArrow = Color(0xFF22D3EE); // cyan — the user's bearing
 
 class GuideApp extends StatefulWidget {
@@ -133,6 +134,32 @@ class PlaceMark {
   final String name;
   String text; // accumulated narration(s) about this place
   PlaceMark(this.id, this.point, this.name, this.text);
+}
+
+// A found-but-not-yet-narrated object from the search disc (lite: name + type),
+// pinned faintly on the map so the user sees everything around them, not only the
+// place currently being narrated. Server pushes these in a "places" frame.
+class NearbyObject {
+  final String id;
+  final LatLng point;
+  final String name;
+  final String category;
+  NearbyObject(this.id, this.point, this.name, this.category);
+}
+
+// Angular spread of a small window of bearings (deg), handling the 360/0 wrap —
+// the max gap from the first sample, mirrored for the short side. Used to decide
+// whether the GPS course is steady enough to trust as a facing for "left/right".
+double _bearingSpread(List<double> xs) {
+  if (xs.length < 2) return 0;
+  final ref = xs.first;
+  var mx = 0.0;
+  for (final x in xs) {
+    var d = (x - ref).abs() % 360.0;
+    if (d > 180.0) d = 360.0 - d;
+    if (d > mx) mx = d;
+  }
+  return mx;
 }
 
 // One queued utterance for the TTS. Narration paragraphs signal `played` to the
@@ -231,6 +258,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final CompassService _compass = CompassService();
   StreamSubscription<CompassReading>? _compassSub;
   CompassReading? _compassReading;
+  final List<double> _recentCourses = []; // recent GPS courses, for a steady-walk check
 
   // On-device TTS — the guide speaks the narration aloud.
   final FlutterTts _tts = FlutterTts();
@@ -256,6 +284,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   double _heading = 0; // degrees, for the bearing arrow
   double _screenH = 800; // logical screen height (for keeping the cursor above the card)
   final List<PlaceMark> _places = []; // narrated places pinned on the map
+  List<NearbyObject> _nearby = []; // all found objects (lite pins from "places" frame)
   String? _currentPlaceId; // the place being narrated now (highlighted)
 
   // What the bottom card shows now.
@@ -484,6 +513,23 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     });
   }
 
+  // Replace the lite map pins with the latest search disc (server pushes the full
+  // set whenever the disc (re)fetches). Narrated places (`_places`) are drawn on top.
+  void _setNearby(Map<String, dynamic> m) {
+    final items = (m['items'] as List?) ?? const [];
+    final next = <NearbyObject>[];
+    for (final it in items) {
+      final o = it as Map<String, dynamic>;
+      final id = o['id'] as String?;
+      final lat = (o['lat'] as num?)?.toDouble();
+      final lon = (o['lon'] as num?)?.toDouble();
+      if (id == null || lat == null || lon == null) continue;
+      next.add(NearbyObject(id, LatLng(lat, lon), (o['name'] as String?) ?? '',
+          (o['category'] as String?) ?? ''));
+    }
+    setState(() => _nearby = next);
+  }
+
   void _connect() {
     _wantConnected = true;
     _reconnectTimer?.cancel();
@@ -524,6 +570,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             });
             _add('reply', t);
             _enqueueSpeech(t, isNarration: false); // answer; doesn't pace the story
+            break;
+          case 'places':
+            _setNearby(m); // pin everything the search disc found (lite)
             break;
           case 'transcript':
             _add('you', m['text'] as String);
@@ -671,9 +720,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   // ---- real GPS ----------------------------------------------------------
-  // Heading comes from the GPS course (movement vector), not a compass — so
-  // gaze_confidence is always 'low' here, matching the documented fallback
-  // (compass is unreliable when the phone is in a pocket).
+  // Facing (for left/right) comes from one of two trustworthy sources: a held-up
+  // compass (phone raised + steady) OR a steady GPS course while walking — the user
+  // moves the way they face. Either earns gaze_confidence=high; otherwise (standing,
+  // wandering, pocketed) we fall back to the raw course at 'low'.
   Future<void> _startGps() async {
     final l = AppLocalizations.of(context)!;
     try {
@@ -700,18 +750,32 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     const settings = LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5);
     _gpsSub = Geolocator.getPositionStream(locationSettings: settings).listen(
       (pos) {
-        // Prefer the compass facing when it's confident; else the GPS course.
+        // Track recent GPS courses (only while actually moving) to tell a steady
+        // walk from a wander. A steady course IS a trustworthy facing — the user
+        // moves the way they look — so it earns gaze=high even without the compass.
+        final course = pos.heading;
+        final walking = pos.speed > 1.0 && course >= 0;
+        if (walking) {
+          _recentCourses.add(course);
+          if (_recentCourses.length > 6) _recentCourses.removeAt(0);
+        } else {
+          _recentCourses.clear();
+        }
+        final steadyCourse =
+            walking && _recentCourses.length >= 4 && _bearingSpread(_recentCourses) < 25.0;
+
+        // Facing priority: held-up compass > steady walking course > raw course.
         final cr = _compassReading;
         final useCompass = cr != null && cr.confident;
         final dir = useCompass
             ? cr.headingDeg
-            : (pos.heading >= 0 ? pos.heading : 0.0);
+            : (course >= 0 ? course : 0.0);
         _sendPosition(
           pos.latitude,
           pos.longitude,
           dir,
           pos.speed > 1.5 ? 'fast' : 'slow',
-          gaze: useCompass ? 'high' : 'low',
+          gaze: (useCompass || steadyCourse) ? 'high' : 'low',
         );
       },
       onError: (e) => _add('meta', l.metaGpsError('$e')),
@@ -727,6 +791,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _gpsSub = null;
     _compass.stop();
     _compassReading = null;
+    _recentCourses.clear();
     setState(() {});
   }
 
@@ -955,6 +1020,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  // A found-but-not-narrated object: just name + type (no facts yet — the guide
+  // tells its story when you walk past it).
+  void _showNearbyInfo(NearbyObject o) {
+    final label = o.name.isEmpty ? o.category : o.name;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(o.category.isEmpty ? label : '$label · ${o.category}'),
+      duration: const Duration(seconds: 2),
+    ));
+  }
+
   // -- map ----------------------------------------------------------------
   Widget _mapView() {
     return FlutterMap(
@@ -980,6 +1055,21 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             subdomains: const ['a', 'b', 'c'],
             userAgentPackageName: 'com.example.ai_audio_guide',
           ),
+        // Lite pins: every object the search disc found (drawn under narrated pins;
+        // a narrated place's own pin overrides its lite dot by id).
+        MarkerLayer(markers: [
+          for (final o in _nearby)
+            if (!_places.any((p) => p.id == o.id))
+              Marker(
+                point: o.point,
+                width: 24,
+                height: 24,
+                child: GestureDetector(
+                  onTap: () => _showNearbyInfo(o),
+                  child: const Icon(Icons.circle, size: 10, color: _pinLite),
+                ),
+              ),
+        ]),
         MarkerLayer(markers: [
           for (final p in _places)
             Marker(

@@ -63,6 +63,27 @@ def test_inventory_keeps_stale_disc_on_empty_fetch():
     asyncio.run(run())
 
 
+def test_take_places_update_pushes_once_per_change():
+    """The map-pin push fires once when the disc is built and again only when it
+    changes — never re-pushing an unchanged disc."""
+
+    async def run():
+        prov = CountingProvider([_place("a")])
+        store = InventoryStore()
+        sid = "s"
+        await store.ensure(sid, HERE, prov)
+        first = store.take_places_update(sid)
+        assert first is not None and [p.id for p in first] == ["a"]
+        assert store.take_places_update(sid) is None  # unchanged -> no re-push
+        prov.places = [_place("a"), _place("b")]  # disc changes on the next refetch
+        far = GeoPoint(lat=HERE.lat + 0.005, lon=HERE.lon)
+        await store.ensure(sid, far, prov)
+        upd = store.take_places_update(sid)
+        assert upd is not None and {p.id for p in upd} == {"a", "b"}
+
+    asyncio.run(run())
+
+
 def test_approach_marks_passed_after_closest_approach():
     """An object the user walks toward and then past is flagged `passed`, so the
     guide can prefer what's ahead over what's behind."""

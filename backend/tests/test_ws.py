@@ -21,6 +21,15 @@ def _heuristic_app(stt_text: str = "А когда его построили?"):
     return TestClient(main_module.app)
 
 
+def _recv(ws):
+    """Next frame, skipping the async 'places' map-pin pushes that interleave with
+    the narration stream (one fires when the inventory disc is first built)."""
+    while True:
+        msg = ws.receive_json()
+        if msg["type"] != "places":
+            return msg
+
+
 def test_ws_narrates_then_replies():
     client = _heuristic_app()
     with client.websocket_connect("/ws") as ws:
@@ -28,16 +37,16 @@ def test_ws_narrates_then_replies():
         ws.send_json(
             {"type": "position", "lat": 55.7525, "lon": 37.6231, "gaze_confidence": "low"}
         )
-        first = ws.receive_json()
+        first = _recv(ws)
         assert first["type"] == "state"
-        second = ws.receive_json()
+        second = _recv(ws)
         assert second["type"] == "narration"
         assert "Василия" in second["text"]
 
         # barge-in
         ws.send_json({"type": "utterance", "text": "пропускай магазины"})
-        ws.receive_json()  # state
-        reply = ws.receive_json()
+        _recv(ws)  # state
+        reply = _recv(ws)
         assert reply["type"] == "reply"
         assert reply["text"]
 
@@ -47,11 +56,11 @@ def test_ws_audio_transcribes_then_replies():
     with client.websocket_connect("/ws") as ws:
         clip = base64.b64encode(b"fake-audio-bytes").decode()
         ws.send_json({"type": "audio", "data_b64": clip, "format": "webm"})
-        transcript = ws.receive_json()
+        transcript = _recv(ws)
         assert transcript["type"] == "transcript"
         assert transcript["text"] == "пропускай магазины"
-        ws.receive_json()  # state
-        reply = ws.receive_json()
+        _recv(ws)  # state
+        reply = _recv(ws)
         assert reply["type"] == "reply"
         assert reply["text"]
 
@@ -63,8 +72,8 @@ def test_ws_audio_empty_transcript_errors():
     with client.websocket_connect("/ws") as ws:
         clip = base64.b64encode(b"silence").decode()
         ws.send_json({"type": "audio", "data_b64": clip, "format": "wav"})
-        assert ws.receive_json()["type"] == "transcript"
-        err = ws.receive_json()
+        assert _recv(ws)["type"] == "transcript"
+        err = _recv(ws)
         assert err["type"] == "error"
         assert "расслыш" in err["message"].lower()
 
@@ -81,13 +90,13 @@ def test_ws_listen_pauses_then_question_resumes():
         )
         clip = base64.b64encode(b"fake-audio").decode()
         ws.send_json({"type": "audio", "data_b64": clip, "format": "wav"})
-        assert ws.receive_json()["type"] == "transcript"
-        assert ws.receive_json()["type"] == "state"
-        reply = ws.receive_json()
+        assert _recv(ws)["type"] == "transcript"
+        assert _recv(ws)["type"] == "state"
+        reply = _recv(ws)
         assert reply["type"] == "reply" and reply["text"]
         # tour resumes after answering
-        assert ws.receive_json()["type"] == "state"
-        assert ws.receive_json()["type"] == "narration"
+        assert _recv(ws)["type"] == "state"
+        assert _recv(ws)["type"] == "narration"
 
 
 def test_producer_exits_on_shutdown_even_while_barging():
@@ -136,8 +145,8 @@ def test_ws_ping_is_ignored():
         ws.send_json(
             {"type": "position", "lat": 55.7525, "lon": 37.6231, "gaze_confidence": "low"}
         )
-        assert ws.receive_json()["type"] == "state"
-        assert ws.receive_json()["type"] == "narration"
+        assert _recv(ws)["type"] == "state"
+        assert _recv(ws)["type"] == "narration"
 
 
 def test_ws_resume_keeps_session_after_disconnect():
@@ -150,8 +159,8 @@ def test_ws_resume_keeps_session_after_disconnect():
         ws.send_json(
             {"type": "position", "lat": 55.7525, "lon": 37.6231, "gaze_confidence": "low"}
         )
-        assert ws.receive_json()["type"] == "state"
-        assert ws.receive_json()["type"] == "narration"
+        assert _recv(ws)["type"] == "state"
+        assert _recv(ws)["type"] == "narration"
     # after the socket closes the session is kept (TTL-evicted later, not deleted now)
     state = asyncio.run(orch.store.load(sid))
     assert state.seen_place_ids, "seen-list should persist across reconnects"

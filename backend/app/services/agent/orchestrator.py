@@ -169,33 +169,29 @@ class Orchestrator:
         if st.control_patch.mute:
             return await self._finish(st, State.IDLE, "silence")
 
-        # heuristic gate: unchanged candidate set + no expansion -> skip the Scorer.
-        # Nothing new nearby: instead of silence, keep telling MORE about the last
-        # place (bounded), so the user isn't left hanging in an empty area.
-        fp = fingerprint(result.candidates)
-        if fp == st.last_candidate_fingerprint and not result.expanded:
-            return await self._continue_monologue(st, heading, pace)
-        st.last_candidate_fingerprint = fp
-
-        # Weave gate: objects within weave_radius_m are narrated as "right here".
-        # Cap the count to bound the Scorer's input/output size.
-        near = [c for c in result.candidates if c.distance_m <= settings.weave_radius_m]
-        near = near[: settings.scorer_max_candidates]
-        # Sparse area (suburb/rural): nothing is within the weave radius, but the
-        # expanded search DID find objects farther out. Don't fall into an endless
-        # area monologue + radius expansion (the "rich district intro but never any
-        # objects" symptom) — narrate the nearest found objects instead. The Scorer
-        # and Narrator get their distance, so they phrase it as "ahead, ~300 m, ...".
-        if not near and result.candidates:
-            near = sorted(result.candidates, key=lambda c: c.distance_m)[
-                : settings.scorer_max_candidates
-            ]
-        if not near:
-            return await self._continue_monologue(st, heading, pace, expanded=result.expanded)
-
-        # Warm facts for objects ahead (non-blocking) so they're cached before the
-        # user arrives — narration on approach is then instant, not a cold search.
+        # Warm facts for the whole live window (non-blocking) — collects facts about
+        # the surrounding objects in the background, so the story is ready the moment
+        # the user reaches one.
         self.pipeline.warm_ahead(result.candidates, address=st.address)
+
+        # Narrate an object ONLY when the user is passing close to it ("проходишь
+        # мимо"): within the small narrate bubble, nearest first. Outside it the area
+        # story spine (city/district/street) carries the tour — no far-object
+        # fallback, so the guide talks about the district, not about objects across
+        # the city.
+        near = [c for c in result.candidates if c.distance_m <= settings.narrate_radius_m]
+        near = sorted(near, key=lambda c: c.distance_m)[: settings.scorer_max_candidates]
+
+        # Gate on the BUBBLE set (not the wide window): skip the LLM when the same
+        # object is still in the bubble (standing next to it) or the bubble is empty
+        # -> advance the area spine instead. Fingerprinting the bubble (not the 300 m
+        # window) is what lets an object that has been approaching for many ticks
+        # fire the instant it enters the bubble.
+        fp = fingerprint(near)
+        gated = fp == st.last_candidate_fingerprint and not result.expanded
+        st.last_candidate_fingerprint = fp
+        if not near or gated:
+            return await self._continue_monologue(st, heading, pace, expanded=result.expanded)
 
         switching = bool(
             st.last_place_id and near[0].place.id != st.last_place_id

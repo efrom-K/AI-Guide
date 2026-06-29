@@ -307,6 +307,25 @@ class WSSetTheme(BaseModel):
 
 
 # server -> client
+class WSPlaceItem(BaseModel):
+    """One discovered object for the map (lite: no facts)."""
+
+    id: str
+    name: str
+    category: str
+    lat: float
+    lon: float
+
+
+class WSPlaces(BaseModel):
+    """The full set of nearby objects found in the search disc — pinned on the map
+    as the user walks (distinct from the single narrated place). Pushed whenever the
+    inventory disc is (re)fetched."""
+
+    type: Literal["places"] = "places"
+    items: list[WSPlaceItem] = Field(default_factory=list)
+
+
 class WSNarration(BaseModel):
     type: Literal["narration"] = "narration"
     text: str

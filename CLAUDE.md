@@ -165,9 +165,10 @@ Product requirements, not suggestions — keep them in any change:
 - **No repeats**: only unseen places enter LLM context.
 - **Facts only**: never fabricate; facts come from enrichment (wiki/web). If unsure, stay silent
   (Narrator returns exactly `[SILENCE]`).
-- **Gaze priority, with confidence**: objects in the gaze direction score higher — but heading
-  comes from the GPS course, so `gaze_confidence=low` is the norm. At `low`, never say
-  "left/right" (only forward/backward is knowable); the flag is threaded into Scorer and Narrator.
+- **Gaze priority, with confidence**: objects in the gaze direction score higher. `gaze_confidence`
+  is `high` only when the facing is trustworthy — a held-up compass **or** a steady GPS course while
+  walking (the user moves the way they face); standing/wandering/pocketed stays `low`. At `low`,
+  never say "left/right" (only forward/backward is knowable); the flag is threaded into Scorer and Narrator.
 - **Seamless switching** and **adaptive radius** as above.
 - **Narration style**: friendly and conversational; no clichés ("unique place", "important
   landmark"); don't inflate ordinary places. Respectful tone for memorials/temples; no ad-speak
@@ -195,5 +196,7 @@ See `CONTINUE.md` §6 for a full annotated dev `.env`, and §5 for the **regiona
 - Enrichment timeout must be **≥9 s** — web search takes ~5–7 s; shorter and the Narrator gets no facts.
 - Wikimedia rejects a bare User-Agent (403) — the `WikiEnricher` UA must stay meaningful.
 - Gemini 3.x reasoning can't be disabled; cap `OPENAI_REASONING_MAX_TOKENS` for Narrator/Landmark/Enricher.
-- `flutter_compass` was removed (broke AGP 8); heading comes from `position.heading`, hence `gaze_confidence=low`.
+- `flutter_compass` was removed (broke AGP 8); facing comes from a fused magnetometer/accelerometer
+  compass (`compass.dart`, confident only when held up + steady) or a steady walking GPS course —
+  either yields `gaze_confidence=high`; otherwise `position.heading` at `low`.
 - Public CARTO/OSM tiles are fine for the prototype, not for production load.

@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+from app.config import settings
 from app.services.agent.companion import HeuristicCompanion
 from app.services.agent.narrator import TemplateNarrator
 from app.services.agent.orchestrator import _MAX_AREA_BEATS, Orchestrator, State, merge_patch
@@ -156,6 +157,25 @@ def test_geocoder_retries_after_empty_then_resolves():
     asyncio.run(run())
 
 
+def test_object_narrated_only_within_passing_bubble():
+    """Step 1: an object outside the small narrate bubble is NOT narrated (the guide
+    stays on the area/silence spine); the SAME object narrates once the user is
+    passing close to it."""
+    p = _place("p", "Музей", "museum")  # at HERE
+    orch = _orch([p], facts={"p": "Большой музей."})
+
+    async def run():
+        far = GeoPoint(lat=HERE.lat + 0.0018, lon=HERE.lon)  # ~200 m: in window, not in bubble
+        o_far = await orch.on_position("s", far, Heading(), Pace.SLOW)
+        assert o_far.kind != "narration"
+        near = GeoPoint(lat=HERE.lat + 0.00035, lon=HERE.lon)  # ~39 m: passing by
+        o_near = await orch.on_position("s", near, Heading(), Pace.SLOW)
+        assert o_near.kind == "narration"
+        assert o_near.place_id == "p"
+
+    asyncio.run(run())
+
+
 def test_street_change_weaves_transition_without_resetting_arc():
     """E: stepping onto a new street within the SAME district sets a transition
     baton (next_hook) and keeps the running arc, instead of a hard reset + opener.
@@ -197,9 +217,9 @@ def test_street_change_weaves_transition_without_resetting_arc():
     asyncio.run(run())
 
 
-def test_warm_ahead_caches_in_cone_objects_nonblocking():
-    """B: facts for objects you're walking TOWARD (in the course cone) are warmed
-    into the cache ahead of arrival; out-of-cone objects are not prioritised."""
+def test_warm_ahead_caches_cone_first_then_nearby_nonblocking():
+    """B/step4: facts are warmed cone-first (what you walk toward), then nearby
+    off-cone objects too (background inventory fact-collection)."""
     from app.services.enrichment.enricher import EnrichmentCache
     from app.shared.schemas import Candidate, GazeConfidence
 
@@ -217,17 +237,35 @@ def test_warm_ahead_caches_in_cone_objects_nonblocking():
         )
 
     async def run():
+        cands = [cand("a", 50, True), cand("b", 120, True), cand("c", 80, False)]
+        # budget=2 -> only the two cone objects warmed (cone has priority over the
+        # nearer off-cone "c")
         cache = EnrichmentCache()
         pipe = TextPipeline(
             HeuristicScorer(), TemplateNarrator(), FakeEnricher(),
             cache=cache, enrich_top_k=2, enrich_timeout_s=5.0,
         )
-        task = pipe.warm_ahead([cand("a", 50, True), cand("b", 120, True), cand("c", 80, False)])
-        assert task is not None
-        await task
-        assert cache.get("a") == "facts:a"  # in-cone -> warmed
-        assert cache.get("b") == "facts:b"
-        assert cache.get("c") is None  # out-of-cone -> not prioritised
+        pipe_settings_k = settings.enrich_lookahead_k
+        settings.enrich_lookahead_k = 2
+        try:
+            await pipe.warm_ahead(cands)
+        finally:
+            settings.enrich_lookahead_k = pipe_settings_k
+        assert cache.get("a") == "facts:a" and cache.get("b") == "facts:b"
+        assert cache.get("c") is None  # cone-first: off-cone bumped past the budget
+
+        # budget=3 -> the nearby off-cone object is warmed too (background facts)
+        cache2 = EnrichmentCache()
+        pipe2 = TextPipeline(
+            HeuristicScorer(), TemplateNarrator(), FakeEnricher(),
+            cache=cache2, enrich_top_k=2, enrich_timeout_s=5.0,
+        )
+        settings.enrich_lookahead_k = 3
+        try:
+            await pipe2.warm_ahead(cands)
+        finally:
+            settings.enrich_lookahead_k = pipe_settings_k
+        assert cache2.get("c") == "facts:c"
 
         # mock/inline path (enrich_top_k=None) must be a no-op (no background work)
         inline = TextPipeline(HeuristicScorer(), TemplateNarrator(), FakeEnricher())

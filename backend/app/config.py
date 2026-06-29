@@ -105,12 +105,17 @@ class Settings(BaseSettings):
     # that blew the tick deadline → "talks about the district but never any object".
     default_radius_m: float = 300.0
     max_radius_m: float = 500.0
-    # An object is narrated as "right here" if it's within this radius. 300 m is a
-    # few minutes' walk — fine for "ahead of you is …" — and it matches the default
-    # search radius so suburban objects actually get narrated, not just found. (A
-    # sparse-area fallback in the orchestrator still narrates the nearest object even
-    # beyond this, so the guide never goes silent when there IS something around.)
+    # The live "window" the orchestrator considers each tick: objects within this
+    # radius are fact-warmed in the background and pinned on the map. It matches the
+    # default search radius so suburban objects are found early. Note: being in the
+    # window no longer means being narrated — that's gated by the much smaller
+    # narrate_radius_m bubble below (the "passing by" trigger).
     weave_radius_m: float = 300.0
+    # The "passing by" bubble: an object is narrated ONLY when the user comes this
+    # close to it. Outside the bubble the area story spine (city/district/street)
+    # carries the tour — the guide doesn't narrate objects scattered across the
+    # wider search radius. Small so narration tracks where the user actually is.
+    narrate_radius_m: float = 60.0
     # Cap how many (nearest) candidates are considered per tick — bounds the
     # Scorer's input/output size (its JSON grows linearly with candidate count).
     scorer_max_candidates: int = 6

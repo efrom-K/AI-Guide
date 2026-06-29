@@ -41,6 +41,7 @@ class SessionInventory:
     anchor: GeoPoint  # centre the current disc was fetched around
     places: list[Place]  # everything found within inventory_radius_m of the anchor
     last_fetch_at: float  # monotonic time of the last fetch attempt (success or empty)
+    version: int = 0  # bumped whenever `places` changes (drives the map-pin push)
     approach: dict[str, ApproachState] = field(default_factory=dict)
 
 
@@ -51,6 +52,8 @@ class InventoryStore:
     def __init__(self) -> None:
         # session_id -> (last_access_monotonic, inventory)
         self._data: dict[str, tuple[float, SessionInventory]] = {}
+        # session_id -> last inventory version pushed to that client (map pins)
+        self._pulled: dict[str, int] = {}
 
     def _evict_expired(self, now: float) -> None:
         ttl = settings.inventory_ttl_s
@@ -86,7 +89,9 @@ class InventoryStore:
         if self._should_fetch(inv, position):
             places = await provider.fetch_places(position, settings.inventory_radius_m)
             if inv is None:
-                inv = SessionInventory(anchor=position, places=places, last_fetch_at=now)
+                inv = SessionInventory(
+                    anchor=position, places=places, last_fetch_at=now, version=1
+                )
             else:
                 # Always re-centre to where we just looked (so we don't refetch next
                 # tick); keep the stale disc only if the new fetch came back empty
@@ -95,6 +100,7 @@ class InventoryStore:
                 inv.last_fetch_at = now
                 if places:
                     inv.places = places
+                    inv.version += 1  # disc changed -> client should refresh its pins
                     ids = {p.id for p in places}
                     inv.approach = {k: v for k, v in inv.approach.items() if k in ids}
         assert inv is not None
@@ -122,3 +128,16 @@ class InventoryStore:
     @staticmethod
     def passed_ids(inv: SessionInventory) -> set[str]:
         return {pid for pid, st in inv.approach.items() if st.passed}
+
+    def take_places_update(self, session_id: str) -> list[Place] | None:
+        """Return the session's inventory places IF the disc has changed since the
+        last pull (else None) — so the producer pushes a fresh set of map pins only
+        when there's something new to draw."""
+        entry = self._data.get(session_id)
+        if entry is None:
+            return None
+        inv = entry[1]
+        if self._pulled.get(session_id) == inv.version:
+            return None
+        self._pulled[session_id] = inv.version
+        return list(inv.places)

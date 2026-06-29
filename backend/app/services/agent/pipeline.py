@@ -94,12 +94,13 @@ class TextPipeline:
         task (or None) so callers/tests can await it; the orchestrator ignores it."""
         if self.enrich_top_k is None or not candidates:
             return None
-        ahead = [c for c in candidates if c.in_gaze_cone] or candidates
-        ahead = [
-            c
-            for c in sorted(ahead, key=lambda c: c.distance_m)
-            if c.place.id not in self.cache
-        ][: settings.enrich_lookahead_k]
+        # Cone-first, then nearest: facts for what you're walking toward are warmed
+        # first, but nearby objects off the cone still get facts too — so the guide
+        # has something ready whichever object you end up passing (background
+        # inventory fact-collection).
+        pending = [c for c in candidates if c.place.id not in self.cache]
+        pending.sort(key=lambda c: (not c.in_gaze_cone, c.distance_m))
+        ahead = pending[: settings.enrich_lookahead_k]
         if not ahead:
             return None
         addr = address or Address()

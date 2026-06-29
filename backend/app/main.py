@@ -235,11 +235,36 @@ class _SessionRuntime:
             self.session_id, self.live_position, self.live_heading, self.live_pace
         )
         await self.send_out(out)
+        await self._maybe_send_places()
         if out.kind == "narration" and out.text:
             await self._wait_played(out.text)  # pace: don't outrun the player
         else:
             self.wake.clear()  # nothing to say -> idle until the context changes
             await self.wake.wait()
+
+    async def _maybe_send_places(self) -> None:
+        """Push the full set of nearby objects for the map when the search disc has
+        (re)fetched — so the client can pin everything it found, not just narrated
+        places. Best-effort: a failure here must never disturb narration."""
+        try:
+            inv = getattr(self.orch.discovery, "inventory", None)
+            places = inv.take_places_update(self.session_id) if inv is not None else None
+        except Exception:
+            return
+        if not places:
+            return
+        items = [
+            {
+                "id": p.id,
+                "name": p.name,
+                "category": p.category,
+                "lat": p.location.lat,
+                "lon": p.location.lon,
+            }
+            for p in places
+        ]
+        with contextlib.suppress(Exception):
+            await self.send_json({"type": "places", "items": items})
 
     async def _wait_played(self, text: str) -> None:
         self.played.clear()
