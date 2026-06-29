@@ -1220,12 +1220,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   // -- map ----------------------------------------------------------------
   Widget _mapView() {
-    // Tiles follow the app theme: a readable light basemap (Voyager) in light mode,
-    // dark matter in dark mode.
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final tiles = dark
-        ? 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_matter/{z}/{x}/{y}.png'
-        : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
     return FlutterMap(
       mapController: _map,
       options: MapOptions(
@@ -1245,7 +1239,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       children: [
         if (!_underTest())
           TileLayer(
-            urlTemplate: tiles,
+            urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
             subdomains: const ['a', 'b', 'c'],
             userAgentPackageName: 'com.example.ai_audio_guide',
           ),
@@ -1313,21 +1307,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Widget _topBar(AppLocalizations l) {
     final c = _c(context);
     return Row(children: [
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: c.glassPill,
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: c.hairline),
-        ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.headphones_rounded, size: 16, color: c.textPrimary),
-          const SizedBox(width: 7),
-          Text('AI Guide',
-              style: TextStyle(
-                  fontWeight: FontWeight.w700, fontSize: 14, color: c.textPrimary)),
-        ]),
-      ),
+      // Small reserved slot top-left for a future brand icon (logo/name removed —
+      // the controls on the right need the room).
+      const SizedBox(width: 40, height: 40),
       const Spacer(),
       Material(
         color: c.glassPill,
