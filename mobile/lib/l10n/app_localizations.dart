@@ -122,35 +122,23 @@ abstract class AppLocalizations {
   /// **'Disconnect'**
   String get disconnect;
 
-  /// No description provided for @wsUrl.
-  ///
-  /// In en, this message translates to:
-  /// **'WebSocket URL'**
-  String get wsUrl;
-
   /// No description provided for @startWalk.
   ///
   /// In en, this message translates to:
-  /// **'▶ Walk'**
+  /// **'Walk'**
   String get startWalk;
 
   /// No description provided for @startGps.
   ///
   /// In en, this message translates to:
-  /// **'▶ GPS'**
+  /// **'GPS'**
   String get startGps;
 
   /// No description provided for @stop.
   ///
   /// In en, this message translates to:
-  /// **'⏸ Stop'**
+  /// **'Stop'**
   String get stop;
-
-  /// No description provided for @gps.
-  ///
-  /// In en, this message translates to:
-  /// **'GPS'**
-  String get gps;
 
   /// No description provided for @ask.
   ///
@@ -181,12 +169,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Clear feed'**
   String get clearFeed;
-
-  /// No description provided for @feedEmpty.
-  ///
-  /// In en, this message translates to:
-  /// **'Feed is empty'**
-  String get feedEmpty;
 
   /// No description provided for @voiceOn.
   ///
@@ -233,7 +215,7 @@ abstract class AppLocalizations {
   /// No description provided for @emptyHint.
   ///
   /// In en, this message translates to:
-  /// **'Connect and tap “Walk”.\nThe guide will tell you about places around you.'**
+  /// **'Tap “Walk”.\nThe guide will tell you about places around you.'**
   String get emptyHint;
 
   /// No description provided for @following.
@@ -247,6 +229,114 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Free browse — tap to follow'**
   String get freeBrowse;
+
+  /// No description provided for @appearance.
+  ///
+  /// In en, this message translates to:
+  /// **'Appearance'**
+  String get appearance;
+
+  /// No description provided for @themeSystem.
+  ///
+  /// In en, this message translates to:
+  /// **'System'**
+  String get themeSystem;
+
+  /// No description provided for @themeLight.
+  ///
+  /// In en, this message translates to:
+  /// **'Light'**
+  String get themeLight;
+
+  /// No description provided for @themeDark.
+  ///
+  /// In en, this message translates to:
+  /// **'Dark'**
+  String get themeDark;
+
+  /// No description provided for @themeTopic.
+  ///
+  /// In en, this message translates to:
+  /// **'Tour theme'**
+  String get themeTopic;
+
+  /// No description provided for @themeAuto.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto'**
+  String get themeAuto;
+
+  /// No description provided for @themeHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'History'**
+  String get themeHistory;
+
+  /// No description provided for @themeArchitecture.
+  ///
+  /// In en, this message translates to:
+  /// **'Architecture'**
+  String get themeArchitecture;
+
+  /// No description provided for @themePeople.
+  ///
+  /// In en, this message translates to:
+  /// **'People'**
+  String get themePeople;
+
+  /// No description provided for @themeCulture.
+  ///
+  /// In en, this message translates to:
+  /// **'Culture'**
+  String get themeCulture;
+
+  /// No description provided for @themeLegends.
+  ///
+  /// In en, this message translates to:
+  /// **'Legends'**
+  String get themeLegends;
+
+  /// No description provided for @route.
+  ///
+  /// In en, this message translates to:
+  /// **'Route'**
+  String get route;
+
+  /// No description provided for @walkHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'Walk history'**
+  String get walkHistory;
+
+  /// No description provided for @walkHistoryEmptyTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'No walks yet'**
+  String get walkHistoryEmptyTitle;
+
+  /// No description provided for @walkHistoryEmptySubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Your past walks will appear here once accounts arrive.'**
+  String get walkHistoryEmptySubtitle;
+
+  /// No description provided for @nearbyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Walk closer and the guide will tell you about it.'**
+  String get nearbyHint;
+
+  /// No description provided for @zoomIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Zoom in'**
+  String get zoomIn;
+
+  /// No description provided for @zoomOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Zoom out'**
+  String get zoomOut;
 
   /// No description provided for @chipReconnecting.
   ///
@@ -320,64 +410,52 @@ abstract class AppLocalizations {
   /// **'offline'**
   String get chipOffline;
 
-  /// No description provided for @metaConnecting.
-  ///
-  /// In en, this message translates to:
-  /// **'· connecting {url}'**
-  String metaConnecting(String url);
-
   /// No description provided for @metaConnectionLost.
   ///
   /// In en, this message translates to:
-  /// **'· connection lost, reconnecting in {seconds}s…'**
+  /// **'Connection lost, reconnecting in {seconds}s…'**
   String metaConnectionLost(int seconds);
 
   /// No description provided for @metaGeoDisabled.
   ///
   /// In en, this message translates to:
-  /// **'⚠ Location is turned off in system settings'**
+  /// **'Location is turned off in system settings'**
   String get metaGeoDisabled;
 
   /// No description provided for @metaGeoNoPermission.
   ///
   /// In en, this message translates to:
-  /// **'⚠ No location permission'**
+  /// **'No location permission'**
   String get metaGeoNoPermission;
 
   /// No description provided for @metaGpsUnavailable.
   ///
   /// In en, this message translates to:
-  /// **'⚠ GPS unavailable on this platform: {error}'**
+  /// **'GPS unavailable on this platform: {error}'**
   String metaGpsUnavailable(String error);
 
   /// No description provided for @metaGpsError.
   ///
   /// In en, this message translates to:
-  /// **'⚠ GPS: {error}'**
+  /// **'GPS: {error}'**
   String metaGpsError(String error);
 
   /// No description provided for @metaRealGpsOn.
   ///
   /// In en, this message translates to:
-  /// **'· real GPS on'**
+  /// **'Real GPS on'**
   String get metaRealGpsOn;
 
   /// No description provided for @metaMicNoPermission.
   ///
   /// In en, this message translates to:
-  /// **'⚠ No microphone access'**
+  /// **'No microphone access'**
   String get metaMicNoPermission;
-
-  /// No description provided for @metaSentByVoice.
-  ///
-  /// In en, this message translates to:
-  /// **'· sent by voice ({bytes} B)'**
-  String metaSentByVoice(int bytes);
 
   /// No description provided for @metaVoiceUnavailable.
   ///
   /// In en, this message translates to:
-  /// **'· voice for {lang} is unavailable on this device'**
+  /// **'Voice for {lang} is unavailable on this device'**
   String metaVoiceUnavailable(String lang);
 }
 

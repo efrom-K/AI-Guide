@@ -19,12 +19,31 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:record/record.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'compass.dart';
 import 'l10n/app_localizations.dart';
+import 'walk_history_screen.dart';
 
-void main() => runApp(const GuideApp());
+// Persisted-preference keys.
+const _kPrefTheme = 'themeMode';
+const _kPrefLang = 'lang';
+
+ThemeMode _parseThemeMode(String? v) => switch (v) {
+      'light' => ThemeMode.light,
+      'dark' => ThemeMode.dark,
+      _ => ThemeMode.system,
+    };
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final prefs = await SharedPreferences.getInstance();
+  runApp(GuideApp(
+    initialThemeMode: _parseThemeMode(prefs.getString(_kPrefTheme)),
+    initialLang: prefs.getString(_kPrefLang),
+  ));
+}
 
 // Supported guide languages: code -> (native label for the picker, TTS BCP-47 tag).
 // Codes are ISO-639-1 and match the backend's languages.py / Whisper.
@@ -70,17 +89,89 @@ bool _underTest() {
   }
 }
 
-// Palette — dark, soft teal accent.
+// Palette — soft teal accent. Pin/marker accents are theme-independent (they must
+// read over both the light Voyager and dark map tiles); the glassy chrome colours
+// live in the AppColors theme extension below so they flip with light/dark.
 const _accent = Color(0xFF2DD4BF); // teal
-const _cardBg = Color(0xF21A1B1F); // glassy dark card over the map
-const _pillBg = Color(0xCC18191D);
 const _pinCurrent = Color(0xFFFBBF24); // amber — the place being narrated
 const _pinPast = Color(0xFF64748B); // slate — already seen
-const _pinLite = Color(0x553B82F6); // faint blue — found-but-not-narrated (inventory)
+const _pinLite = Color(0x803B82F6); // blue — found-but-not-narrated (inventory)
 const _userArrow = Color(0xFF22D3EE); // cyan — the user's bearing
 
+// App-specific surface/text colours that Material's ColorScheme doesn't model well
+// (translucent "glass" card/pills/sheets over the map, hairlines, tiered text). One
+// variant per brightness; looked up via `Theme.of(context).extension<AppColors>()!`.
+@immutable
+class AppColors extends ThemeExtension<AppColors> {
+  final Color glassCard; // the bottom narration card
+  final Color glassPill; // top-bar + FAB pills
+  final Color sheetBg; // modal bottom sheets
+  final Color hairline; // thin borders
+  final Color textPrimary;
+  final Color textSecondary;
+  final Color textFaint;
+
+  const AppColors({
+    required this.glassCard,
+    required this.glassPill,
+    required this.sheetBg,
+    required this.hairline,
+    required this.textPrimary,
+    required this.textSecondary,
+    required this.textFaint,
+  });
+
+  static const dark = AppColors(
+    glassCard: Color(0xF21A1B1F),
+    glassPill: Color(0xCC18191D),
+    sheetBg: Color(0xFF15161A),
+    hairline: Colors.white12,
+    textPrimary: Colors.white,
+    textSecondary: Colors.white70,
+    textFaint: Colors.white38,
+  );
+
+  static const light = AppColors(
+    glassCard: Color(0xF2FFFFFF),
+    glassPill: Color(0xF2FFFFFF),
+    sheetBg: Color(0xFFF7F8FA),
+    hairline: Colors.black12,
+    textPrimary: Color(0xFF111317),
+    textSecondary: Color(0xFF3F454D),
+    textFaint: Color(0xFF8A9099),
+  );
+
+  @override
+  AppColors copyWith({
+    Color? glassCard,
+    Color? glassPill,
+    Color? sheetBg,
+    Color? hairline,
+    Color? textPrimary,
+    Color? textSecondary,
+    Color? textFaint,
+  }) =>
+      AppColors(
+        glassCard: glassCard ?? this.glassCard,
+        glassPill: glassPill ?? this.glassPill,
+        sheetBg: sheetBg ?? this.sheetBg,
+        hairline: hairline ?? this.hairline,
+        textPrimary: textPrimary ?? this.textPrimary,
+        textSecondary: textSecondary ?? this.textSecondary,
+        textFaint: textFaint ?? this.textFaint,
+      );
+
+  @override
+  AppColors lerp(AppColors? other, double t) => t < 0.5 ? this : (other ?? this);
+}
+
+// Convenience accessor used throughout the widget tree.
+AppColors _c(BuildContext context) => Theme.of(context).extension<AppColors>()!;
+
 class GuideApp extends StatefulWidget {
-  const GuideApp({super.key});
+  final ThemeMode initialThemeMode;
+  final String? initialLang; // null => derive from the system locale
+  const GuideApp({super.key, required this.initialThemeMode, this.initialLang});
 
   @override
   State<GuideApp> createState() => _GuideAppState();
@@ -88,35 +179,60 @@ class GuideApp extends StatefulWidget {
 
 class _GuideAppState extends State<GuideApp> {
   late Locale _locale;
+  late ThemeMode _themeMode;
 
   @override
   void initState() {
     super.initState();
-    // Auto-select the system language; fall back to English if unsupported.
+    _themeMode = widget.initialThemeMode;
+    // Use the saved language; else auto-select the system language (fall back to en).
     final sys = WidgetsBinding.instance.platformDispatcher.locale.languageCode;
-    _locale = Locale(normLang(sys));
+    _locale = Locale(normLang(widget.initialLang ?? sys));
   }
 
-  void _setLocale(String code) => setState(() => _locale = Locale(normLang(code)));
+  Future<void> _persist(String key, String value) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString(key, value);
+  }
+
+  void _setLocale(String code) {
+    setState(() => _locale = Locale(normLang(code)));
+    _persist(_kPrefLang, normLang(code));
+  }
+
+  void _setThemeMode(ThemeMode mode) {
+    setState(() => _themeMode = mode);
+    _persist(_kPrefTheme, mode.name);
+  }
+
+  ThemeData _theme(Brightness brightness) {
+    final scheme = ColorScheme.fromSeed(seedColor: _accent, brightness: brightness);
+    final dark = brightness == Brightness.dark;
+    return ThemeData(
+      colorScheme: dark ? scheme.copyWith(surface: const Color(0xFF0E0F12)) : scheme,
+      useMaterial3: true,
+      scaffoldBackgroundColor: dark ? const Color(0xFF0E0F12) : const Color(0xFFF3F4F6),
+      extensions: [dark ? AppColors.dark : AppColors.light],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: _accent,
-      brightness: Brightness.dark,
-    ).copyWith(surface: const Color(0xFF0E0F12));
     return MaterialApp(
-      title: 'AI Audio Guide',
+      title: 'AI Guide',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: scheme,
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFF0E0F12),
-      ),
+      theme: _theme(Brightness.light),
+      darkTheme: _theme(Brightness.dark),
+      themeMode: _themeMode,
       locale: _locale,
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
-      home: HomePage(locale: _locale, onLocaleChanged: _setLocale),
+      home: HomePage(
+        locale: _locale,
+        onLocaleChanged: _setLocale,
+        themeMode: _themeMode,
+        onThemeModeChanged: _setThemeMode,
+      ),
     );
   }
 }
@@ -171,14 +287,26 @@ class _Speech {
 }
 
 // Tour themes the user can switch to ("" = let the guide choose automatically).
-const List<({String code, String label})> kThemes = [
-  (code: '', label: '🎲 Авто'),
-  (code: 'история', label: '🏛 История'),
-  (code: 'архитектура', label: '🏗 Архитектура'),
-  (code: 'люди и судьбы', label: '👤 Люди'),
-  (code: 'культура и искусство', label: '🎭 Культура'),
-  (code: 'легенды и тайны', label: '🕯 Легенды'),
+// `code` is the backend-facing topic string (Russian — the agent maps it, don't
+// change it); the visible label comes from l10n at render time, with an icon.
+const List<({String code, IconData icon})> kThemes = [
+  (code: '', icon: Icons.casino_rounded),
+  (code: 'история', icon: Icons.account_balance_rounded),
+  (code: 'архитектура', icon: Icons.architecture_rounded),
+  (code: 'люди и судьбы', icon: Icons.people_alt_rounded),
+  (code: 'культура и искусство', icon: Icons.theater_comedy_rounded),
+  (code: 'легенды и тайны', icon: Icons.local_fire_department_rounded),
 ];
+
+// The visible label for a theme code, localized.
+String _themeLabel(AppLocalizations l, String code) => switch (code) {
+      'история' => l.themeHistory,
+      'архитектура' => l.themeArchitecture,
+      'люди и судьбы' => l.themePeople,
+      'культура и искусство' => l.themeCulture,
+      'легенды и тайны' => l.themeLegends,
+      _ => l.themeAuto,
+    };
 
 // Demo/test routes: real Moscow walks, waypoints joined in order (straight
 // segments). Selectable in Settings when "simulated walk" is on; played back at
@@ -226,17 +354,24 @@ const double kWalkSpeedMps = 1.95; // ~7 km/h (brisk human pace)
 const double kStepM = 8; // metres between simulated GPS fixes (matches the real distanceFilter)
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key, required this.locale, required this.onLocaleChanged});
+  const HomePage({
+    super.key,
+    required this.locale,
+    required this.onLocaleChanged,
+    required this.themeMode,
+    required this.onThemeModeChanged,
+  });
 
   final Locale locale; // current UI/guide language
   final void Function(String code) onLocaleChanged; // swap MaterialApp.locale
+  final ThemeMode themeMode; // current appearance (system/light/dark)
+  final void Function(ThemeMode mode) onThemeModeChanged; // swap appearance + persist
 
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
-  final _urlCtrl = TextEditingController(text: kDefaultWsUrl);
   final _askCtrl = TextEditingController();
   final _scroll = ScrollController();
   WebSocketChannel? _ch;
@@ -468,7 +603,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     if (_connected) _send({'type': 'language', 'language': code});
     final ok = await _tts.isLanguageAvailable(kLangs[code]!.tts);
     if (ok != true && mounted) {
-      _add('meta', l.metaVoiceUnavailable(kLangs[code]!.label));
+      _toast(l.metaVoiceUnavailable(kLangs[code]!.label));
     }
   }
 
@@ -481,6 +616,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     if (mounted) setState(() => _speaking = false);
   }
 
+  // The conversation feed holds ONLY real dialog (guide | you | reply). System and
+  // status lines go to a transient toast instead, so the history stays readable.
   void _add(String kind, String text) {
     setState(() => _log.add(Msg(kind, text)));
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -490,6 +627,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       }
     });
   }
+
+  // A brief, non-intrusive status/error message (GPS, mic, connection). Never enters
+  // the conversation history.
+  void _toast(String text) {
+    if (!mounted) return;
+    final m = ScaffoldMessenger.maybeOf(context);
+    m?.hideCurrentSnackBar();
+    m?.showSnackBar(SnackBar(content: Text(text), duration: const Duration(seconds: 3)));
+  }
+
+  bool get _hasDialog =>
+      _log.any((m) => m.kind == 'guide' || m.kind == 'reply' || m.kind == 'you');
 
   // Pin a narrated place on the map (dedup by id; the latest is "current").
   // Follow-up narrations about the same place accumulate into its story.
@@ -537,7 +686,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     // overlapping connections — the churn seen in the prod logs on a flaky link.
     _heartbeat?.cancel();
     _ch?.sink.close();
-    var url = _urlCtrl.text.trim();
+    // Backend URL is baked in at build time (--dart-define WS_URL); not user-facing.
+    var url = kDefaultWsUrl;
     final params = <String>['sid=$_sid']; // resume the same session on reconnect
     if (kWsToken.isNotEmpty) params.add('token=${Uri.encodeComponent(kWsToken)}');
     final sep = url.contains('?') ? '&' : '?';
@@ -578,18 +728,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             _add('you', m['text'] as String);
             break;
           case 'error':
-            _add('meta', '⚠ ${m['message']}');
+            _toast('${m['message']}');
             break;
         }
       },
       onDone: _onDisconnected,
-      onError: (e) => _add('meta', '⚠ $e'),
+      onError: (e) => _toast('$e'),
     );
     setState(() {
       _ch = ch;
       _connected = true;
       _state = '—';
-      _add('meta', AppLocalizations.of(context)!.metaConnecting(_urlCtrl.text));
     });
     // (Re)send the language first so narration + STT use it before any
     // position/audio arrives, then the theme. With ?sid= the backend resumes the
@@ -609,7 +758,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     if (!_wantConnected) return;
     final delay = Duration(seconds: (1 << _retries).clamp(1, 16)); // 1,2,4,8,16s
     _retries++;
-    _add('meta', AppLocalizations.of(context)!.metaConnectionLost(delay.inSeconds));
+    _toast(AppLocalizations.of(context)!.metaConnectionLost(delay.inSeconds));
     _reconnectTimer = Timer(delay, () {
       if (_wantConnected) _connect();
     });
@@ -728,7 +877,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     final l = AppLocalizations.of(context)!;
     try {
       if (!await Geolocator.isLocationServiceEnabled()) {
-        _add('meta', l.metaGeoDisabled);
+        _toast(l.metaGeoDisabled);
         return;
       }
       var perm = await Geolocator.checkPermission();
@@ -736,11 +885,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         perm = await Geolocator.requestPermission();
       }
       if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
-        _add('meta', l.metaGeoNoPermission);
+        _toast(l.metaGeoNoPermission);
         return;
       }
     } catch (e) {
-      _add('meta', l.metaGpsUnavailable('$e'));
+      _toast(l.metaGpsUnavailable('$e'));
       return;
     }
 
@@ -778,9 +927,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           gaze: (useCompass || steadyCourse) ? 'high' : 'low',
         );
       },
-      onError: (e) => _add('meta', l.metaGpsError('$e')),
+      onError: (e) => _toast(l.metaGpsError('$e')),
     );
-    _add('meta', l.metaRealGpsOn);
+    _toast(l.metaRealGpsOn);
     setState(() {});
   }
 
@@ -834,7 +983,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     if (_ch == null) return;
     final l = AppLocalizations.of(context)!; // capture before awaits
     if (!await _rec.hasPermission()) {
-      _add('meta', l.metaMicNoPermission);
+      _toast(l.metaMicNoPermission);
       return;
     }
     _hush(); // barge-in: stop the guide locally...
@@ -851,12 +1000,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       setState(() => _recording = true);
     } catch (e) {
       _send({'type': 'listen', 'on': false}); // mic failed — let the tour resume
-      _add('meta', '⚠ ${l.metaMicNoPermission}');
+      _toast(l.metaMicNoPermission);
     }
   }
 
   Future<void> _stopRecAndSend() async {
-    final l = AppLocalizations.of(context)!; // capture before awaits
     await _rec.stop();
     await _audioSub?.cancel();
     _audioSub = null;
@@ -869,7 +1017,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _audioBuf.clear();
     // The audio frame is itself the barge-in; the server answers then resumes.
     _send({'type': 'audio', 'data_b64': base64Encode(wav), 'format': 'wav'});
-    _add('meta', l.metaSentByVoice(wav.length));
   }
 
   // Wrap raw PCM16 (mono, 16 kHz) in a minimal WAV container so the backend's
@@ -985,34 +1132,36 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     ctrl.forward();
   }
 
-  // Tap a map pin -> show the place's name and its story.
+  // Tap a narrated pin -> a card with the place's name and its accumulated story.
   void _showPlaceInfo(PlaceMark p) {
+    final c = _c(context);
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF15161A),
+      backgroundColor: c.sheetBg,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
       builder: (ctx) => DraggableScrollableSheet(
         expand: false,
         initialChildSize: 0.45,
         maxChildSize: 0.85,
-        builder: (c, controller) => ListView(
+        builder: (ctx, controller) => ListView(
           controller: controller,
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          padding: const EdgeInsets.fromLTRB(22, 18, 22, 28),
           children: [
             Row(children: [
               Icon(Icons.location_on, color: p.id == _currentPlaceId ? _pinCurrent : _pinPast),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(p.name.isEmpty ? '—' : p.name,
-                    style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+                    style: TextStyle(
+                        fontSize: 20, fontWeight: FontWeight.w700, color: c.textPrimary)),
               ),
             ]),
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             Text(
               p.text.isEmpty ? '…' : p.text,
-              style: const TextStyle(fontSize: 15, height: 1.5, color: Colors.white70),
+              style: TextStyle(fontSize: 15, height: 1.55, color: c.textSecondary),
             ),
           ],
         ),
@@ -1020,18 +1169,63 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  // A found-but-not-narrated object: just name + type (no facts yet — the guide
-  // tells its story when you walk past it).
+  // Tap a found-but-not-narrated pin -> a light card: name + type + a hint that the
+  // guide will tell its story once you walk up to it (no facts yet). Outline icon and
+  // the faint accent distinguish it from a narrated place.
   void _showNearbyInfo(NearbyObject o) {
-    final label = o.name.isEmpty ? o.category : o.name;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(o.category.isEmpty ? label : '$label · ${o.category}'),
-      duration: const Duration(seconds: 2),
-    ));
+    final c = _c(context);
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: c.sheetBg,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+      builder: (ctx) {
+        final l = AppLocalizations.of(ctx)!;
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(22, 20, 22, 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                const Icon(Icons.place_outlined, color: _pinLite),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(o.name.isEmpty ? o.category : o.name,
+                      style: TextStyle(
+                          fontSize: 19, fontWeight: FontWeight.w700, color: c.textPrimary)),
+                ),
+              ]),
+              if (o.category.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(o.category, style: TextStyle(fontSize: 14, color: c.textSecondary)),
+              ],
+              const SizedBox(height: 14),
+              Text(l.nearbyHint,
+                  style: TextStyle(fontSize: 14, height: 1.5, color: c.textFaint)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // Zoom the map by one step (used by the +/- buttons). Instant move (no second
+  // AnimationController to keep map lifecycle simple).
+  void _zoomBy(double delta) {
+    if (!_mapReady) return;
+    final z = (_map.camera.zoom + delta).clamp(3.0, 19.0);
+    _map.move(_map.camera.center, z);
   }
 
   // -- map ----------------------------------------------------------------
   Widget _mapView() {
+    // Tiles follow the app theme: a readable light basemap (Voyager) in light mode,
+    // dark matter in dark mode.
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final tiles = dark
+        ? 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_matter/{z}/{x}/{y}.png'
+        : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png';
     return FlutterMap(
       mapController: _map,
       options: MapOptions(
@@ -1051,7 +1245,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       children: [
         if (!_underTest())
           TileLayer(
-            urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+            urlTemplate: tiles,
             subdomains: const ['a', 'b', 'c'],
             userAgentPackageName: 'com.example.ai_audio_guide',
           ),
@@ -1104,36 +1298,43 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   // -- top bar ------------------------------------------------------------
   Widget _iconPill(IconData icon, String tooltip, VoidCallback onTap) {
+    final c = _c(context);
     return Material(
-      color: _pillBg,
-      shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+      color: c.glassPill,
+      shape: CircleBorder(side: BorderSide(color: c.hairline)),
       child: IconButton(
         tooltip: tooltip,
-        icon: Icon(icon, size: 20, color: Colors.white70),
+        icon: Icon(icon, size: 20, color: c.textSecondary),
         onPressed: onTap,
       ),
     );
   }
 
   Widget _topBar(AppLocalizations l) {
+    final c = _c(context);
     return Row(children: [
       Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-          color: _pillBg,
+          color: c.glassPill,
           borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: Colors.white12),
+          border: Border.all(color: c.hairline),
         ),
-        child: const Text('🎧  AI Guide',
-            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.headphones_rounded, size: 16, color: c.textPrimary),
+          const SizedBox(width: 7),
+          Text('AI Guide',
+              style: TextStyle(
+                  fontWeight: FontWeight.w700, fontSize: 14, color: c.textPrimary)),
+        ]),
       ),
       const Spacer(),
       Material(
-        color: _pillBg,
-        shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+        color: c.glassPill,
+        shape: CircleBorder(side: BorderSide(color: c.hairline)),
         child: PopupMenuButton<String>(
           tooltip: l.language,
-          icon: const Icon(Icons.translate, size: 20, color: Colors.white70),
+          icon: Icon(Icons.translate, size: 20, color: c.textSecondary),
           initialValue: _lang,
           onSelected: _changeLanguage,
           itemBuilder: (_) => [
@@ -1144,16 +1345,23 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       ),
       const SizedBox(width: 8),
       Material(
-        color: _pillBg,
-        shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+        color: c.glassPill,
+        shape: CircleBorder(side: BorderSide(color: c.hairline)),
         child: PopupMenuButton<String>(
-          tooltip: 'Тема рассказа',
-          icon: const Icon(Icons.auto_stories_rounded, size: 20, color: Colors.white70),
+          tooltip: l.themeTopic,
+          icon: Icon(Icons.auto_stories_rounded, size: 20, color: c.textSecondary),
           initialValue: _theme,
           onSelected: _setTheme,
           itemBuilder: (_) => [
             for (final t in kThemes)
-              PopupMenuItem(value: t.code, child: Text(t.label)),
+              PopupMenuItem(
+                value: t.code,
+                child: Row(children: [
+                  Icon(t.icon, size: 18, color: c.textSecondary),
+                  const SizedBox(width: 10),
+                  Text(_themeLabel(l, t.code)),
+                ]),
+              ),
           ],
         ),
       ),
@@ -1161,20 +1369,25 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _iconPill(_voice ? Icons.volume_up_rounded : Icons.volume_off_rounded,
           _voice ? l.voiceOn : l.voiceOff, _toggleVoice),
       const SizedBox(width: 8),
+      _iconPill(Icons.route_rounded, l.walkHistory,
+          () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const WalkHistoryScreen()))),
+      const SizedBox(width: 8),
       _iconPill(Icons.tune_rounded, l.settings, _openSettings),
     ]);
   }
 
   // -- bottom card --------------------------------------------------------
   Widget _bottomCard(AppLocalizations l) {
+    final c = _c(context);
     final hasNarration = _curText != null && _curText!.isNotEmpty;
     final title = _curIsReply ? l.chipAnswering : _curTitle;
     return Container(
       decoration: BoxDecoration(
-        color: _cardBg,
+        color: c.glassCard,
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: Colors.white12),
-        boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 24, offset: Offset(0, 8))],
+        border: Border.all(color: c.hairline),
+        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 24, offset: Offset(0, 8))],
       ),
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
       child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1184,26 +1397,29 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           IconButton(
             tooltip: l.history,
             visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.history_rounded, size: 20, color: Colors.white54),
-            onPressed: _log.isEmpty ? null : _openHistory,
+            icon: Icon(Icons.history_rounded, size: 20, color: c.textFaint),
+            onPressed: _hasDialog ? _openHistory : null,
           ),
         ]),
         const SizedBox(height: 6),
         if (hasNarration) ...[
           if (title != null && title.isNotEmpty)
-            Text(title, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+            Text(title,
+                style: TextStyle(
+                    fontSize: 19, fontWeight: FontWeight.w700, color: c.textPrimary)),
           if (title != null && title.isNotEmpty) const SizedBox(height: 6),
           ConstrainedBox(
             constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.26),
             child: SingleChildScrollView(
-              child: Text(_curText!, style: const TextStyle(fontSize: 15, height: 1.45, color: Colors.white70)),
+              child: Text(_curText!,
+                  style: TextStyle(fontSize: 15, height: 1.45, color: c.textSecondary)),
             ),
           ),
         ] else
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 14),
             child: Text(l.emptyHint,
-                style: const TextStyle(fontSize: 15, height: 1.4, color: Colors.white54)),
+                style: TextStyle(fontSize: 15, height: 1.4, color: c.textFaint)),
           ),
         const SizedBox(height: 14),
         Row(children: [
@@ -1217,7 +1433,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               ),
               icon: Icon(_active ? Icons.stop_rounded : Icons.play_arrow_rounded),
-              label: Text(_active ? l.stop.replaceAll('⏸ ', '') : l.startWalk.replaceAll('▶ ', ''),
+              label: Text(_active ? l.stop : l.startWalk,
                   style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
             ),
           ),
@@ -1225,16 +1441,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           _roundAction(
             icon: _recording ? Icons.stop_rounded : Icons.mic_rounded,
             tooltip: _recording ? l.micStop : l.micAsk,
-            color: _recording ? const Color(0xFFEF4444) : _pillBg,
-            fg: _recording ? Colors.white : Colors.white70,
+            color: _recording ? const Color(0xFFEF4444) : c.glassPill,
+            fg: _recording ? Colors.white : c.textSecondary,
             onTap: _connected ? _toggleMic : null,
           ),
           const SizedBox(width: 10),
           _roundAction(
             icon: Icons.keyboard_rounded,
             tooltip: l.ask,
-            color: _pillBg,
-            fg: Colors.white70,
+            color: c.glassPill,
+            fg: c.textSecondary,
             onTap: _connected ? _openAsk : null,
           ),
         ]),
@@ -1253,7 +1469,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       opacity: onTap == null ? 0.4 : 1,
       child: Material(
         color: color,
-        shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+        shape: CircleBorder(side: BorderSide(color: _c(context).hairline)),
         child: IconButton(
           tooltip: tooltip,
           padding: const EdgeInsets.all(14),
@@ -1277,14 +1493,35 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     ctrl.forward();
   }
 
+  // A small +/- zoom control column for the map.
+  Widget _zoomFab(AppLocalizations l) {
+    final c = _c(context);
+    Widget btn(IconData icon, String tip, String tag, VoidCallback onTap) =>
+        FloatingActionButton.small(
+          heroTag: tag,
+          tooltip: tip,
+          backgroundColor: c.glassPill,
+          foregroundColor: c.textSecondary,
+          shape: CircleBorder(side: BorderSide(color: c.hairline)),
+          onPressed: onTap,
+          child: Icon(icon),
+        );
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      btn(Icons.add_rounded, l.zoomIn, 'zoomIn', () => _zoomBy(1)),
+      const SizedBox(height: 10),
+      btn(Icons.remove_rounded, l.zoomOut, 'zoomOut', () => _zoomBy(-1)),
+    ]);
+  }
+
   // Compass button: the needle reflects the map bearing; tap orients to north.
   Widget _compassFab(AppLocalizations l) {
+    final c = _c(context);
     return FloatingActionButton.small(
       heroTag: 'compass',
       tooltip: l.compassNorth,
-      backgroundColor: _pillBg,
-      foregroundColor: Colors.white70,
-      shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+      backgroundColor: c.glassPill,
+      foregroundColor: c.textSecondary,
+      shape: CircleBorder(side: BorderSide(color: c.hairline)),
       onPressed: _resetNorth,
       child: Transform.rotate(
         angle: -_mapRotation * pi / 180,
@@ -1295,12 +1532,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   // -- follow FAB ---------------------------------------------------------
   Widget _followFab(AppLocalizations l) {
+    final c = _c(context);
     return FloatingActionButton.small(
       heroTag: 'follow',
       tooltip: _follow ? l.following : l.freeBrowse,
-      backgroundColor: _follow ? _accent : _pillBg,
-      foregroundColor: _follow ? Colors.black : Colors.white70,
-      shape: const CircleBorder(side: BorderSide(color: Colors.white12)),
+      backgroundColor: _follow ? _accent : c.glassPill,
+      foregroundColor: _follow ? Colors.black : c.textSecondary,
+      shape: CircleBorder(side: BorderSide(color: c.hairline)),
       onPressed: () {
         setState(() => _follow = true);
         _animateTo(_followCenter()); // smooth glide; keep the cursor above the card
@@ -1315,7 +1553,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF15161A),
+      backgroundColor: _c(context).sheetBg,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => Padding(
@@ -1351,10 +1589,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   void _openHistory() {
     final l = AppLocalizations.of(context)!;
+    // Conversation only: the guide's narration, its replies, and your questions —
+    // never system/status lines (those are transient toasts).
+    final dialog = _log.where((m) => m.kind != 'meta').toList();
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF15161A),
+      backgroundColor: _c(context).sheetBg,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => DraggableScrollableSheet(
@@ -1381,8 +1622,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             child: ListView.builder(
               controller: controller,
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
-              itemCount: _log.length,
-              itemBuilder: (_, i) => _logTile(_log[i]),
+              itemCount: dialog.length,
+              itemBuilder: (_, i) => _logTile(dialog[i]),
             ),
           ),
         ]),
@@ -1391,11 +1632,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   Widget _logTile(Msg m) {
+    final c = _c(context);
     final (bg, fg) = switch (m.kind) {
-      'guide' => (_accent.withValues(alpha: 0.12), Colors.white),
-      'reply' => (const Color(0x2234D399), Colors.white),
-      'you' => (Colors.white10, Colors.white70),
-      _ => (Colors.white10, Colors.white38),
+      'guide' => (_accent.withValues(alpha: 0.12), c.textPrimary),
+      'reply' => (const Color(0x2234D399), c.textPrimary),
+      _ => (c.hairline, c.textSecondary), // 'you'
     };
     final align = m.kind == 'you' ? Alignment.centerRight : Alignment.centerLeft;
     return Align(
@@ -1415,7 +1656,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF15161A),
+      backgroundColor: _c(context).sheetBg,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => StatefulBuilder(
@@ -1423,17 +1664,37 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           padding: EdgeInsets.fromLTRB(16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 24),
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(l.settings, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _urlCtrl,
-              enabled: !_active,
-              decoration: InputDecoration(
-                labelText: l.wsUrl,
-                filled: true,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            const SizedBox(height: 16),
+            Text(l.appearance,
+                style: TextStyle(
+                    fontSize: 13, fontWeight: FontWeight.w600, color: _c(context).textSecondary)),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<ThemeMode>(
+                segments: [
+                  ButtonSegment(
+                      value: ThemeMode.system,
+                      icon: const Icon(Icons.brightness_auto_rounded, size: 18),
+                      label: Text(l.themeSystem)),
+                  ButtonSegment(
+                      value: ThemeMode.light,
+                      icon: const Icon(Icons.light_mode_rounded, size: 18),
+                      label: Text(l.themeLight)),
+                  ButtonSegment(
+                      value: ThemeMode.dark,
+                      icon: const Icon(Icons.dark_mode_rounded, size: 18),
+                      label: Text(l.themeDark)),
+                ],
+                selected: {widget.themeMode},
+                showSelectedIcon: false,
+                onSelectionChanged: (s) {
+                  widget.onThemeModeChanged(s.first);
+                  setSheet(() {});
+                },
               ),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 12),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: Text(l.simulatedWalk),
@@ -1448,7 +1709,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               DropdownButtonFormField<String>(
                 initialValue: _routeKey,
                 decoration: InputDecoration(
-                  labelText: 'Маршрут',
+                  labelText: l.route,
                   filled: true,
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 ),
@@ -1498,6 +1759,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 child: Padding(
                   padding: const EdgeInsets.only(bottom: 10),
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    _zoomFab(l),
+                    const SizedBox(height: 10),
                     if (_mapRotation.abs() > 0.5) ...[
                       _compassFab(l),
                       const SizedBox(height: 10),

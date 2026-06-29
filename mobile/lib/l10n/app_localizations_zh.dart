@@ -15,19 +15,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get disconnect => '断开';
 
   @override
-  String get wsUrl => 'WebSocket 地址';
+  String get startWalk => '漫步';
 
   @override
-  String get startWalk => '▶ 漫步';
+  String get startGps => 'GPS';
 
   @override
-  String get startGps => '▶ GPS';
-
-  @override
-  String get stop => '⏸ 停止';
-
-  @override
-  String get gps => 'GPS';
+  String get stop => '停止';
 
   @override
   String get ask => '提问';
@@ -43,9 +37,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get clearFeed => '清空记录';
-
-  @override
-  String get feedEmpty => '记录为空';
 
   @override
   String get voiceOn => '已开启朗读';
@@ -69,13 +60,67 @@ class AppLocalizationsZh extends AppLocalizations {
   String get compassNorth => '朝向正北';
 
   @override
-  String get emptyHint => '连接后点击“漫步”。\n导游会为你讲解周围的地点。';
+  String get emptyHint => '点击“漫步”。\n导游会为你讲解周围的地点。';
 
   @override
   String get following => '正在跟随你';
 
   @override
   String get freeBrowse => '自由浏览——点击以跟随';
+
+  @override
+  String get appearance => '外观';
+
+  @override
+  String get themeSystem => '跟随系统';
+
+  @override
+  String get themeLight => '浅色';
+
+  @override
+  String get themeDark => '深色';
+
+  @override
+  String get themeTopic => '导览主题';
+
+  @override
+  String get themeAuto => '自动';
+
+  @override
+  String get themeHistory => '历史';
+
+  @override
+  String get themeArchitecture => '建筑';
+
+  @override
+  String get themePeople => '人物';
+
+  @override
+  String get themeCulture => '文化';
+
+  @override
+  String get themeLegends => '传说';
+
+  @override
+  String get route => '路线';
+
+  @override
+  String get walkHistory => '漫步记录';
+
+  @override
+  String get walkHistoryEmptyTitle => '还没有漫步记录';
+
+  @override
+  String get walkHistoryEmptySubtitle => '账号功能上线后，你过去的漫步会显示在这里。';
+
+  @override
+  String get nearbyHint => '走近一些，导游就会为你讲解。';
+
+  @override
+  String get zoomIn => '放大';
+
+  @override
+  String get zoomOut => '缩小';
 
   @override
   String get chipReconnecting => '正在重连……';
@@ -114,44 +159,34 @@ class AppLocalizationsZh extends AppLocalizations {
   String get chipOffline => '离线';
 
   @override
-  String metaConnecting(String url) {
-    return '· 正在连接 $url';
-  }
-
-  @override
   String metaConnectionLost(int seconds) {
-    return '· 连接断开，$seconds 秒后重连……';
+    return '连接断开，$seconds 秒后重连……';
   }
 
   @override
-  String get metaGeoDisabled => '⚠ 系统中已关闭定位';
+  String get metaGeoDisabled => '系统中已关闭定位';
 
   @override
-  String get metaGeoNoPermission => '⚠ 没有定位权限';
+  String get metaGeoNoPermission => '没有定位权限';
 
   @override
   String metaGpsUnavailable(String error) {
-    return '⚠ 此平台不支持 GPS：$error';
+    return '此平台不支持 GPS：$error';
   }
 
   @override
   String metaGpsError(String error) {
-    return '⚠ GPS：$error';
+    return 'GPS：$error';
   }
 
   @override
-  String get metaRealGpsOn => '· 已开启真实 GPS';
+  String get metaRealGpsOn => '已开启真实 GPS';
 
   @override
-  String get metaMicNoPermission => '⚠ 没有麦克风权限';
-
-  @override
-  String metaSentByVoice(int bytes) {
-    return '· 已通过语音发送（$bytes 字节）';
-  }
+  String get metaMicNoPermission => '没有麦克风权限';
 
   @override
   String metaVoiceUnavailable(String lang) {
-    return '· 此设备不支持 $lang 语音';
+    return '此设备不支持 $lang 语音';
   }
 }

@@ -15,19 +15,13 @@ class AppLocalizationsIt extends AppLocalizations {
   String get disconnect => 'Disconnetti';
 
   @override
-  String get wsUrl => 'URL WebSocket';
+  String get startWalk => 'Passeggiata';
 
   @override
-  String get startWalk => '▶ Passeggiata';
+  String get startGps => 'GPS';
 
   @override
-  String get startGps => '▶ GPS';
-
-  @override
-  String get stop => '⏸ Stop';
-
-  @override
-  String get gps => 'GPS';
+  String get stop => 'Stop';
 
   @override
   String get ask => 'Chiedi';
@@ -43,9 +37,6 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get clearFeed => 'Cancella il registro';
-
-  @override
-  String get feedEmpty => 'Il registro è vuoto';
 
   @override
   String get voiceOn => 'Narrazione attiva';
@@ -70,13 +61,68 @@ class AppLocalizationsIt extends AppLocalizations {
 
   @override
   String get emptyHint =>
-      'Connettiti e tocca «Passeggiata».\nLa guida ti racconterà i luoghi intorno a te.';
+      'Tocca «Passeggiata».\nLa guida ti racconterà i luoghi intorno a te.';
 
   @override
   String get following => 'Ti sto seguendo';
 
   @override
   String get freeBrowse => 'Esplorazione libera — tocca per seguire';
+
+  @override
+  String get appearance => 'Aspetto';
+
+  @override
+  String get themeSystem => 'Sistema';
+
+  @override
+  String get themeLight => 'Chiaro';
+
+  @override
+  String get themeDark => 'Scuro';
+
+  @override
+  String get themeTopic => 'Tema del tour';
+
+  @override
+  String get themeAuto => 'Auto';
+
+  @override
+  String get themeHistory => 'Storia';
+
+  @override
+  String get themeArchitecture => 'Architettura';
+
+  @override
+  String get themePeople => 'Persone';
+
+  @override
+  String get themeCulture => 'Cultura';
+
+  @override
+  String get themeLegends => 'Leggende';
+
+  @override
+  String get route => 'Percorso';
+
+  @override
+  String get walkHistory => 'Cronologia delle passeggiate';
+
+  @override
+  String get walkHistoryEmptyTitle => 'Ancora nessuna passeggiata';
+
+  @override
+  String get walkHistoryEmptySubtitle =>
+      'Le tue passeggiate passate appariranno qui quando arriveranno gli account.';
+
+  @override
+  String get nearbyHint => 'Avvicinati e la guida te ne parlerà.';
+
+  @override
+  String get zoomIn => 'Ingrandisci';
+
+  @override
+  String get zoomOut => 'Riduci';
 
   @override
   String get chipReconnecting => 'riconnessione…';
@@ -115,45 +161,35 @@ class AppLocalizationsIt extends AppLocalizations {
   String get chipOffline => 'offline';
 
   @override
-  String metaConnecting(String url) {
-    return '· connessione $url';
-  }
-
-  @override
   String metaConnectionLost(int seconds) {
-    return '· connessione persa, riconnessione tra ${seconds}s…';
+    return 'connessione persa, riconnessione tra ${seconds}s…';
   }
 
   @override
   String get metaGeoDisabled =>
-      '⚠ La geolocalizzazione è disattivata nel sistema';
+      'La geolocalizzazione è disattivata nel sistema';
 
   @override
-  String get metaGeoNoPermission => '⚠ Nessun permesso di geolocalizzazione';
+  String get metaGeoNoPermission => 'Nessun permesso di geolocalizzazione';
 
   @override
   String metaGpsUnavailable(String error) {
-    return '⚠ GPS non disponibile su questa piattaforma: $error';
+    return 'GPS non disponibile su questa piattaforma: $error';
   }
 
   @override
   String metaGpsError(String error) {
-    return '⚠ GPS: $error';
+    return 'GPS: $error';
   }
 
   @override
-  String get metaRealGpsOn => '· GPS reale attivo';
+  String get metaRealGpsOn => 'GPS reale attivo';
 
   @override
-  String get metaMicNoPermission => '⚠ Nessun accesso al microfono';
-
-  @override
-  String metaSentByVoice(int bytes) {
-    return '· inviato a voce ($bytes B)';
-  }
+  String get metaMicNoPermission => 'Nessun accesso al microfono';
 
   @override
   String metaVoiceUnavailable(String lang) {
-    return '· la voce per $lang non è disponibile su questo dispositivo';
+    return 'la voce per $lang non è disponibile su questo dispositivo';
   }
 }
