@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.config import settings
+from app.services.agent import languages as lang
 from app.services.agent.companion import Companion
 from app.services.agent.pipeline import TextPipeline
 from app.services.geo.discovery import Discovery
@@ -59,13 +60,8 @@ _MAX_ELABORATE = 2
 _BEATS_PER_LEVEL = 3  # soft cap of facts per level before descending (no-repeat trims it)
 _LEVEL_ATTEMPTS_PER_TICK = 3  # one lull tick may descend city->district->street if dry
 # Short spoken bridges for when the area material is exhausted and nothing is near:
-# say one ("пройдём дальше") and then go genuinely silent, rather than filler.
-_BRIDGES = (
-    "Идём дальше.",
-    "Пройдём дальше, тут пока тихо.",
-    "Двигаемся дальше.",
-    "Идём дальше — расскажу, как только будет что.",
-)
+# say one ("let's move on") and then go genuinely silent, rather than filler. These
+# are spoken VERBATIM, so they live in languages.py and are picked by session language.
 # Hard ceiling on the adaptive-radius discovery per tick. Discovery now makes at
 # most two Overpass calls (tight, then one wide), each with its own mirror-failover
 # timeout; this caps the pair so a tick can't stall for minutes in a sparse/foreign
@@ -295,7 +291,7 @@ class Orchestrator:
             # the arc — weave a smooth transition into the running monologue via the
             # next-paragraph baton ("свернув на …"), instead of a hard area intro.
             st.last_street = addr.street
-            st.narrative_plan.next_hook = f"переход на улицу {addr.street}"
+            st.narrative_plan.next_hook = lang.street_hook(st.language, addr.street)
             # Re-arm the cascade so the fresh street gets its own facts (city/district
             # already in HISTORY -> the no-repeat rule silences them and it descends).
             st.area_level = 0
@@ -334,7 +330,7 @@ class Orchestrator:
         opener = (draft.opener or "").strip()
         if not opener:
             return None
-        plan.told = (plan.told + ["вступление в район"])[-_TOLD_CAP:]
+        plan.told = (plan.told + [lang.area_intro_told(st.language)])[-_TOLD_CAP:]
         st.narration_history = (st.narration_history + [opener])[-_HISTORY_CAP:]
         return await self._finish(st, State.NARRATING, "narration", opener)
 
@@ -378,7 +374,8 @@ class Orchestrator:
         #    go quiet, instead of mussing the same topic in circles. One per lull.
         if self._has_area(st) and not st.area_bridge_said:
             st.area_bridge_said = True
-            bridge = _BRIDGES[st.area_beats % len(_BRIDGES)]
+            bridges = lang.bridges(st.language)
+            bridge = bridges[st.area_beats % len(bridges)]
             st.narration_history = (st.narration_history + [bridge])[-_HISTORY_CAP:]
             return await self._finish(st, State.IDLE, "narration", bridge)
 
@@ -415,10 +412,7 @@ class Orchestrator:
                 st.area_level_beats = 0
                 continue
             label, name = levels[st.area_level]
-            topic = (
-                f"ещё один неочевидный, нетипичный факт про {label} {name} — "
-                "то, чего обычно не знают; без банальностей и без повторов"
-            )
+            topic = lang.area_topic(st.language, label, name)
             text = await self._emit_area_beat(st, topic, focus=None, pace=pace)
             attempts += 1
             if text:
@@ -429,15 +423,17 @@ class Orchestrator:
         return ""
 
     def _area_levels(self, st) -> list[tuple[str, str]]:
-        """The (label, name) levels to descend through, broadest first."""
+        """The (label, name) levels to descend through, broadest first. Labels are in
+        the session language so the cascade topic reads naturally to the LLM."""
         a = st.address
+        city_l, district_l, street_l = lang.level_labels(st.language)
         levels: list[tuple[str, str]] = []
         if a.city:
-            levels.append(("город", a.city))
+            levels.append((city_l, a.city))
         if a.district:
-            levels.append(("район", a.district))
+            levels.append((district_l, a.district))
         if a.street:
-            levels.append(("улицу", a.street))
+            levels.append((street_l, a.street))
         return levels
 
     async def _emit_area_beat(self, st, topic: str, *, focus: str | None, pace: Pace) -> str:

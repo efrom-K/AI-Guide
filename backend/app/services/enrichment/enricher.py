@@ -61,16 +61,27 @@ class MockEnricher:
         return cls(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
+# Language-neutral instruction (English) so web search isn't biased toward any one
+# locale's sources. The facts themselves need no fixed language: the Narrator always
+# re-expresses them in the session's {language}. Sentinel is a language-independent
+# token (see _is_no_data) so "no reliable data" detection works regardless of locale.
 _ENRICH_SYSTEM = (
-    "Ты собираешь проверяемые факты о конкретном месте для аудиогида. Место задано "
-    "названием, городом/страной и координатами. КРИТИЧНО: бери факты только об этом "
-    "самом объекте в указанном месте. Если результаты поиска относятся к одноимённому "
-    "объекту в другом городе или стране — игнорируй их. Никогда не смешивай факты о "
-    "разных местах. По результатам веб-поиска выдай 2-4 кратких достоверных факта "
-    "(история, кто/когда построил, чем примечательно, любопытные детали). Только факты, "
-    "без воды и оценок, без выдумок. Если нет надёжной информации именно об этом месте "
-    "в указанной локации — ответь ровно: НЕТ."
+    "You gather verifiable facts about one specific place for an audio guide. The "
+    "place is given by name, city/country and coordinates. CRITICAL: use facts about "
+    "this exact object at this exact location only. If search results refer to a "
+    "same-named place in another city or country, ignore them. Never mix facts about "
+    "different places. From the web-search results, give 2-4 short, reliable facts "
+    "(history, who/when built it, what makes it notable, curious details). Facts only "
+    "— no filler, no opinions, no invention. If there is no reliable information about "
+    "this exact place at this location, reply with exactly: NONE."
 )
+
+
+def _is_no_data(text: str) -> bool:
+    """True if the model signalled 'no reliable facts'. Accepts the neutral NONE
+    sentinel and the legacy Russian НЕТ, ignoring leading bullets/punctuation."""
+    head = text.upper().lstrip("*•-. ")
+    return head.startswith("NONE") or head.startswith("НЕТ")
 
 
 class WebSearchEnricher:
@@ -102,7 +113,7 @@ class WebSearchEnricher:
         # Always pin the location with coordinates so the model can reject a
         # same-named place elsewhere (e.g. an OSM "Eurocity" in Moscow vs Gibraltar).
         where = context or place.tags.get("addr:city") or ""
-        coords = f"координаты {place.location.lat:.4f}, {place.location.lon:.4f}"
+        coords = f"coordinates {place.location.lat:.4f}, {place.location.lon:.4f}"
         parts = [
             place.name,
             f"({place.category})" if place.category else "",
@@ -133,7 +144,7 @@ class WebSearchEnricher:
                 max_tokens=self._max_tokens,
             )
             cleaned = text.strip()
-            if cleaned and cleaned.upper().lstrip("*•-. ").startswith("НЕТ") is False:
+            if cleaned and not _is_no_data(cleaned):
                 facts = cleaned
         except Exception as e:  # network/provider hiccup — degrade to no facts
             _log.warning("enrich failed for %s: %s", place.id, e)

@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config import settings
 from app.services.agent.factory import build_orchestrator
-from app.services.agent.languages import normalize
+from app.services.agent.languages import normalize, stt_unclear
 from app.services.agent.orchestrator import Orchestrator, OrchestratorOutput, merge_patch
 from app.services.llm.client import METER, SESSION_ID
 from app.services.stt.stt import STTClient, build_stt
@@ -308,7 +308,7 @@ class _SessionRuntime:
                 await self.send_json({"type": "transcript", "text": text})
                 if not text.strip():  # nothing intelligible — say so instead of a vague reply
                     await self.send_json(
-                        {"type": "error", "message": "Не расслышал — повтори, пожалуйста."}
+                        {"type": "error", "message": stt_unclear(st.language)}
                     )
                     return
             else:
@@ -319,7 +319,8 @@ class _SessionRuntime:
             _counters["question_errors"] += 1
             _log.warning("question handling failed (%s): %r", self.session_id, e)
             with contextlib.suppress(Exception):
-                await self.send_json({"type": "error", "message": "не расслышал, попробуй ещё раз"})
+                st = await self.orch.store.load(self.session_id)
+                await self.send_json({"type": "error", "message": stt_unclear(st.language)})
         finally:
             self.listening = False
             self.resume.set()  # let the producer continue regardless

@@ -13,6 +13,7 @@ from app.config import settings
 from app.services.enrichment.enricher import (
     Enricher,
     EnrichmentCache,
+    _is_no_data,
     attach_facts,
     prefetch,
 )
@@ -50,12 +51,12 @@ class StepResult:
 # Atypical-facts-forward area enrichment: lesser-known facts about the district /
 # street / city, not the obvious encyclopedic blurb.
 _AREA_ENRICH_SYSTEM = (
-    "Ты собираешь нетипичные, малоизвестные факты о районе/улице/городе для "
-    "аудиогида. Дай 2-4 кратких достоверных факта именно об этом районе или улице "
-    "в указанном городе: необычная история, как место возникло и менялось, забытые "
-    "эпизоды, чем известно в узких кругах. Очевидное и банально-общеизвестное не "
-    "пиши. Только проверяемые факты, без выдумок и оценок. Если надёжной информации "
-    "именно об этом районе нет — ответь ровно: НЕТ."
+    "You gather atypical, little-known facts about a district/street/city for an "
+    "audio guide. Give 2-4 short, reliable facts about this exact district or street "
+    "in the named city: unusual history, how the place came to be and changed, "
+    "forgotten episodes, what it's known for in narrow circles. Skip the obvious and "
+    "the commonly-known. Verifiable facts only, no invention or opinions. If there is "
+    "no reliable information about this exact district, reply with exactly: NONE."
 )
 
 
@@ -296,8 +297,8 @@ class TextPipeline:
         where = " ".join(p for p in (address.district, address.street, address.city) if p)
         if not where:
             return None
-        coords = f"координаты {point.lat:.4f}, {point.lon:.4f}" if point else ""
-        query = f"{where} {coords} район история чем известен необычные факты".strip()
+        coords = f"coordinates {point.lat:.4f}, {point.lon:.4f}" if point else ""
+        query = f"{where} {coords} neighbourhood history what it's known for unusual facts".strip()
         try:
             coro = self.area_llm.web_facts(
                 _AREA_ENRICH_SYSTEM, query, max_results=3, max_tokens=400
@@ -306,6 +307,6 @@ class TextPipeline:
         except (Exception, asyncio.TimeoutError):
             return None
         cleaned = (text or "").strip()
-        if not cleaned or cleaned.upper().lstrip("*•-. ").startswith("НЕТ"):
+        if not cleaned or _is_no_data(cleaned):
             return None
         return cleaned
