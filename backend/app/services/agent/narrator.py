@@ -30,19 +30,23 @@ _HOOK_INSTR = (
     "на языке рассказа. Это ВНУТРЕННЯЯ пометка: она НЕ произносится и не входит в "
     "сам рассказ. Если связки нет — строку HOOK не добавляй."
 )
-_HOOK_RE = re.compile(r"(?im)^[ \t]*HOOK:[ \t]*(.*?)[ \t]*$")
+# The HOOK sentinel is meant to be a trailing line, but models (DeepSeek especially)
+# often tack it onto the END of the last sentence on the SAME line ("…прошлого.
+# HOOK: дальше"). Match `HOOK:` ANYWHERE and cut from there to the end — it's always
+# the final thing — so it never leaks into the spoken TTS text.
+_HOOK_RE = re.compile(r"(?is)\bHOOK:\s*(.*)$")
 
 
 def split_hook(text: str) -> tuple[str, str | None]:
-    """Split a trailing `HOOK: ...` line off the narration. Returns (spoken, hook).
-    No HOOK line -> (text, None). Safe on already-normalized/empty text."""
+    """Split a trailing `HOOK: ...` baton off the narration (whether on its own line
+    or inline at the end). Returns (spoken, hook). No HOOK -> (text, None)."""
     if not text:
         return text, None
     m = _HOOK_RE.search(text)
     if m is None:
         return text, None
     hook = (m.group(1) or "").strip() or None
-    spoken = (text[: m.start()] + text[m.end() :]).strip()
+    spoken = text[: m.start()].strip()
     return spoken, hook
 
 # very rough per-category openers for the template fallback (no facts case)

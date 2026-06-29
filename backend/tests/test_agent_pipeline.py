@@ -180,6 +180,10 @@ def test_split_hook_parses_and_strips():
     assert split_hook("") == ("", None)
     spoken, hook = split_hook("Начало.\nHOOK: связка\n")
     assert spoken == "Начало." and hook == "связка"
+    # inline HOOK (model put it on the SAME line as the last sentence) must still strip
+    assert split_hook("…память о прошлом. HOOK: а вот дальше") == (
+        "…память о прошлом.", "а вот дальше"
+    )
 
 
 def test_pipeline_step_extracts_next_hook_and_strips_it():
