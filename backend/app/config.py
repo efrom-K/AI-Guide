@@ -57,7 +57,10 @@ class Settings(BaseSettings):
     #   overpass -> derive admin areas + street from the Overpass endpoint above
     #   none     -> no geocoding (guide won't name the area)
     geocoder_source: str = "overpass"  # overpass | none
-    geocoder_min_move_m: float = 150.0  # only re-resolve the address after moving this far
+    # Re-resolve the address after moving this far. Lower = the street name catches up
+    # sooner after you turn onto a new one (the "долго находит улицу" lag); the request
+    # is still off the hot-path and cheap relative to the LLM calls.
+    geocoder_min_move_m: float = 90.0
 
     # Area-level monologue (the spine that fills gaps between objects)
     area_enrich: bool = True  # fetch verified facts about the district/city (web search)
@@ -115,7 +118,9 @@ class Settings(BaseSettings):
     # close to it. Outside the bubble the area story spine (city/district/street)
     # carries the tour — the guide doesn't narrate objects scattered across the
     # wider search radius. Small so narration tracks where the user actually is.
-    narrate_radius_m: float = 60.0
+    # 75 m (was 60): a touch wider so objects are picked up reliably as you pass,
+    # still tight enough that it's "right here", not "somewhere across the block".
+    narrate_radius_m: float = 75.0
     # Cap how many (nearest) candidates are considered per tick — bounds the
     # Scorer's input/output size (its JSON grows linearly with candidate count).
     scorer_max_candidates: int = 6

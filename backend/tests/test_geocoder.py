@@ -68,6 +68,46 @@ def test_parse_prefers_localized_name_and_empty():
     assert parse_address([], "ru") == Address()
 
 
+def test_parse_street_prefers_highest_road_class():
+    """On a wide avenue several named ways fall in range; the resolved street must be
+    the main road (проспект), not whichever side street Overpass listed first — that
+    stability is what stops the street name (and the area story) from flickering."""
+    els = [
+        # a side street is returned FIRST, the avenue second — class must win, not order
+        {"type": "way", "tags": {"highway": "residential", "name": "Тупиковый переулок"}},
+        {"type": "way", "tags": {"highway": "primary", "name": "проспект Пацаева"}},
+        {"type": "way", "tags": {"highway": "service", "name": "Дублёр"}},
+    ]
+    assert parse_address(els, "ru").street == "проспект Пацаева"
+    # a single named street is still picked as-is
+    one = [{"type": "way", "tags": {"highway": "residential", "name": "Воронцовская улица"}}]
+    assert parse_address(one, "ru").street == "Воронцовская улица"
+
+
+def test_parse_street_picks_nearest_when_geometry_given():
+    """With a point + way geometry, the NEAREST street wins even if a bigger road is
+    also in range — so a generous search radius never mislabels you onto a far avenue
+    you can merely see. Class only breaks ties between equally-near streets."""
+    here = GeoPoint(lat=55.7000, lon=37.6000)
+
+    def way(name, hw, dlat):  # a short E-W segment offset dlat degrees north of `here`
+        lat = here.lat + dlat
+        return {
+            "type": "way", "tags": {"highway": hw, "name": name},
+            "geometry": [
+                {"lat": lat, "lon": here.lon - 0.001},
+                {"lat": lat, "lon": here.lon + 0.001},
+            ],
+        }
+
+    els = [
+        way("Большой проспект", "primary", 0.0009),   # a primary, but ~100 m away
+        way("Тихая улица", "residential", 0.00015),   # residential, but ~17 m away (here)
+    ]
+    assert parse_address(els, "ru", here).street == "Тихая улица"  # nearest wins
+    # far primary out of the picture -> the street you're on is chosen, not the avenue
+
+
 # --------------------------------------------------------------------------- #
 # Story-arc flow — opener -> woven object -> outline-advancing area beats
 # --------------------------------------------------------------------------- #

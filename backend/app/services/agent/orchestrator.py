@@ -38,7 +38,11 @@ from app.shared.schemas import (
     Significance,
 )
 
-_HISTORY_CAP = 12
+# Recent narrations fed back to the roles as the no-repeat window. 18 (was 12): the
+# anti-repeat check is "don't say anything already in HISTORY", so a too-short window
+# let facts told ~12 beats ago resurface on a long single street. Wider window, fewer
+# repeats — at a modest prompt-size cost.
+_HISTORY_CAP = 18
 _SEEN_CAP = 600  # cap the dedup list so a long walk can't grow session state unbounded
 _TOLD_CAP = 80  # cap the arc's covered-topics ledger
 _CONVO_CAP = 20
