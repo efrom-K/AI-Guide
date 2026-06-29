@@ -172,6 +172,27 @@ def test_repeat_guard_silences_without_elaborate():
     assert asyncio.run(n.narrate(inp)) == ""  # repeat guard fires
 
 
+def test_split_hook_parses_and_strips():
+    from app.services.agent.narrator import split_hook
+
+    assert split_hook("Рассказ тут.\nHOOK: дальше к реке") == ("Рассказ тут.", "дальше к реке")
+    assert split_hook("Просто текст") == ("Просто текст", None)
+    assert split_hook("") == ("", None)
+    spoken, hook = split_hook("Начало.\nHOOK: связка\n")
+    assert spoken == "Начало." and hook == "связка"
+
+
+def test_pipeline_step_extracts_next_hook_and_strips_it():
+    # the Narrator's trailing HOOK: line must be stripped from speech and surfaced
+    # as StepResult.next_hook (the baton woven into the next paragraph).
+    narrator = LLMNarrator(FakeLLM(text_response="Старый маяк у входа в порт.\nHOOK: к набережной"))
+    pipe = TextPipeline(HeuristicScorer(), narrator, MockEnricher({}))
+    cand = _candidate("m", "Маяк", "lighthouse", 0.8)
+    out = asyncio.run(pipe.step([cand], seen=[], history=[]))
+    assert out.text == "Старый маяк у входа в порт."  # HOOK line gone from speech
+    assert out.next_hook == "к набережной"
+
+
 def test_pipeline_elaborate_uses_cached_facts():
     pipe = TextPipeline(
         HeuristicScorer(),

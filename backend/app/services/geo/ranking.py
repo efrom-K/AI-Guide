@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from app.shared.geo_math import angle_diff, bearing_deg, haversine_m
+from app.shared.geo_math import angle_diff, bearing_deg, haversine_m, relative_bearing
 from app.shared.schemas import Candidate, GazeConfidence, GeoPoint, Heading, Place
 
 from .categories import weight_for
@@ -18,6 +18,19 @@ from .categories import weight_for
 GAZE_CONE_DEG = 45.0
 _GAZE_BOOST_HIGH = 1.5
 _GAZE_BOOST_LOW = 1.2
+
+
+def _side(rel_bearing: float, confidence: GazeConfidence) -> str:
+    """Map a signed relative bearing to a spoken side. ahead/behind are safe from
+    the GPS course; left/right require a real facing (gaze_confidence=high)."""
+    a = abs(rel_bearing)
+    if a <= GAZE_CONE_DEG:
+        return "ahead"
+    if a >= 180.0 - GAZE_CONE_DEG:
+        return "behind"
+    if confidence is GazeConfidence.HIGH:
+        return "left" if rel_bearing < 0 else "right"
+    return ""  # lateral, but confidence too low to call left/right
 
 
 def _score(candidate: Candidate, radius_m: float) -> float:
@@ -48,9 +61,13 @@ def build_candidates(
         if distance > radius_m:
             continue
         in_cone = False
+        rel_bearing: float | None = None
+        side: str | None = None
         if heading.direction_deg is not None:
             bearing = bearing_deg(position, place.location)
             in_cone = angle_diff(bearing, heading.direction_deg) <= GAZE_CONE_DEG
+            rel_bearing = round(relative_bearing(heading.direction_deg, bearing), 1)
+            side = _side(rel_bearing, heading.gaze_confidence) or None
         candidates.append(
             Candidate(
                 place=place,
@@ -58,6 +75,8 @@ def build_candidates(
                 type_weight=weight_for(place.category),
                 in_gaze_cone=in_cone,
                 gaze_confidence=heading.gaze_confidence,
+                relative_bearing_deg=rel_bearing,
+                side=side,
             )
         )
     candidates.sort(key=lambda c: _score(c, radius_m), reverse=True)

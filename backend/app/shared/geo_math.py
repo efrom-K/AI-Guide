@@ -31,3 +31,16 @@ def angle_diff(a: float, b: float) -> float:
     """Smallest absolute difference between two bearings (0..180)."""
     d = abs(a - b) % 360.0
     return d if d <= 180.0 else 360.0 - d
+
+
+def relative_bearing(heading_deg: float, target_bearing_deg: float) -> float:
+    """Signed angle of `target` relative to `heading`, in (-180, 180].
+
+    Bearings are clockwise from north, so a positive result means the target is
+    clockwise from where you face — i.e. **to your right**; negative is **left**.
+    (Facing north, an object due east → +90 → right; due west → -90 → left.)
+    Unlike `angle_diff`, this keeps the sign, which is what distinguishes left
+    from right — only meaningful when the heading is a real facing direction
+    (compass / gaze_confidence=high), not a noisy GPS course.
+    """
+    return ((target_bearing_deg - heading_deg + 180.0) % 360.0) - 180.0

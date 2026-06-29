@@ -100,6 +100,7 @@ def build_narrator_user(inp: NarratorInput) -> str:
             "HEADING": {
                 "direction_deg": inp.heading.direction_deg,
                 "gaze_confidence": inp.heading.gaze_confidence.value,
+                "side": inp.side,  # ahead|behind|left|right (left/right only at high gaze)
             },
             "PACE": inp.pace.value,
             "CONTEXT": inp.context.model_dump(exclude_none=True),

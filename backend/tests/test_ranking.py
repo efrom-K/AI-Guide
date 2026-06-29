@@ -39,3 +39,33 @@ def test_gaze_cone_detected_when_heading_known():
     museum = next(c for c in cands if c.place.id == "p_museum")
     assert museum.in_gaze_cone is True
     assert museum.gaze_confidence is GazeConfidence.HIGH
+
+
+# objects around POSITION when facing north (0°): east is to the right, west to the
+# left, north ahead, south behind.
+_SIDE_PLACES = [
+    _place("east", "E", "monument", 55.7537, 37.6220),
+    _place("west", "W", "monument", 55.7537, 37.6190),
+    _place("north", "N", "monument", 55.7546, 37.6205),
+    _place("south", "S", "monument", 55.7528, 37.6205),
+]
+
+
+def test_side_left_right_only_at_high_gaze():
+    hi = Heading(direction_deg=0.0, gaze_confidence=GazeConfidence.HIGH)
+    by = {c.place.id: c for c in build_candidates(POSITION, hi, _SIDE_PLACES, radius_m=300.0)}
+    assert by["east"].side == "right"
+    assert by["west"].side == "left"
+    assert by["north"].side == "ahead"
+    assert by["south"].side == "behind"
+
+
+def test_side_no_left_right_at_low_gaze_but_ahead_behind_ok():
+    lo = Heading(direction_deg=0.0, gaze_confidence=GazeConfidence.LOW)
+    by = {c.place.id: c for c in build_candidates(POSITION, lo, _SIDE_PLACES, radius_m=300.0)}
+    # lateral objects get no side at low confidence (never fake left/right)...
+    assert by["east"].side is None
+    assert by["west"].side is None
+    # ...but ahead/behind are knowable from the GPS course
+    assert by["north"].side == "ahead"
+    assert by["south"].side == "behind"

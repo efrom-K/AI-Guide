@@ -149,12 +149,16 @@ class Orchestrator:
             # stays inflated at 500 m; it still expands within this tick if nothing
             # is found, but the next tick starts close again. Bounded by an overall
             # deadline so a slow/blocked Overpass can't stall the tick for minutes.
-            result = await asyncio.wait_for(
-                self.discovery.discover_adaptive(
+            discover = (
+                self.discovery.discover_inventory(
+                    session_id, position, heading, st.seen_place_ids
+                )
+                if settings.inventory_enabled
+                else self.discovery.discover_adaptive(
                     position, heading, st.seen_place_ids, settings.default_radius_m
-                ),
-                timeout=_DISCOVERY_DEADLINE_S,
+                )
             )
+            result = await asyncio.wait_for(discover, timeout=_DISCOVERY_DEADLINE_S)
         except Exception:  # includes asyncio.TimeoutError from the deadline
             # Don't go silent: keep elaborating on the current place (or a short area
             # line) until discovery succeeds on a later tick.
@@ -189,6 +193,10 @@ class Orchestrator:
         if not near:
             return await self._continue_monologue(st, heading, pace, expanded=result.expanded)
 
+        # Warm facts for objects ahead (non-blocking) so they're cached before the
+        # user arrives — narration on approach is then instant, not a cold search.
+        self.pipeline.warm_ahead(result.candidates, address=st.address)
+
         switching = bool(
             st.last_place_id and near[0].place.id != st.last_place_id
         )
@@ -220,7 +228,7 @@ class Orchestrator:
             st.elaboration_count = 0  # fresh place — allow follow-ups again
             st.area_beats = 0  # fresh budget of connective area beats for the next lull
             plan.told = (plan.told + [out.place.name])[-_TOLD_CAP:]  # arc ledger (anti-repeat)
-            plan.next_hook = None
+            plan.next_hook = out.next_hook  # baton: weave this into the next paragraph
             state = State.SWITCHING if switching else State.NARRATING
             return await self._finish(
                 st, state, "narration", out.text, out.place, out.significance
@@ -260,6 +268,13 @@ class Orchestrator:
             st.area_beats = 0
             # fresh area => fresh story arc, but keep the user's chosen theme (if any)
             st.narrative_plan = NarrativePlan(theme_override=st.narrative_plan.theme_override)
+            st.last_street = addr.street  # adopt silently; the area opener covers arrival
+        elif addr.street and addr.street != st.last_street and st.area_intro_done:
+            # Same district, but the user just stepped onto a NEW street. Don't reset
+            # the arc — weave a smooth transition into the running monologue via the
+            # next-paragraph baton ("свернув на …"), instead of a hard area intro.
+            st.last_street = addr.street
+            st.narrative_plan.next_hook = f"переход на улицу {addr.street}"
 
     def _has_area(self, st) -> bool:
         a = st.address
@@ -354,7 +369,7 @@ class Orchestrator:
             )
             st.area_facts = facts or ""  # cache "" so we don't refetch every beat
         try:
-            text = await self.pipeline.narrate_area(
+            text, hook = await self.pipeline.narrate_area(
                 st.address,
                 facts=st.area_facts or None,
                 theme=plan.active_theme() or None,
@@ -373,7 +388,7 @@ class Orchestrator:
             if focus:
                 plan.pending_focus.pop(0)  # answered/woven this user topic
             plan.told = (plan.told + [topic])[-_TOLD_CAP:]
-            plan.next_hook = None
+            plan.next_hook = hook  # baton for the next paragraph
             st.narration_history = (st.narration_history + [text])[-_HISTORY_CAP:]
         return text
 

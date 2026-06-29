@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from app.config import settings
 from app.shared.schemas import Candidate, GeoPoint, Heading
 
+from .inventory import InventoryStore
 from .providers import PlaceProvider
 from .ranking import build_candidates
 
@@ -36,6 +37,10 @@ class Discovery:
         self.provider = provider
         self.max_radius_m = max_radius_m or settings.max_radius_m
         self.expand_factor = expand_factor
+        # Per-session inventory cache (Overpass off the hot-path). Held here so it
+        # survives reconnects (one Discovery per orchestrator/process) yet stays
+        # isolated between tests (each builds its own orchestrator).
+        self.inventory = InventoryStore()
 
     async def discover(
         self,
@@ -68,3 +73,44 @@ class Discovery:
         wide = self.max_radius_m
         candidates = await self.discover(position, heading, seen, wide)
         return DiscoveryResult(candidates, wide, expanded=True, exhausted=not candidates)
+
+    async def discover_inventory(
+        self,
+        session_id: str,
+        position: GeoPoint,
+        heading: Heading,
+        seen: list[str],
+    ) -> DiscoveryResult:
+        """Inventory-backed discovery: serve candidates from a per-session cached
+        disc instead of hitting Overpass every tick. The candidate set is still a
+        tight window around the LIVE position (so the orchestrator's fingerprint
+        gate keeps working); only the network call is amortised. A sparse window
+        widens to the whole cached disc (no extra Overpass), mirroring the
+        tight->wide shape of `discover_adaptive`."""
+        inv = await self.inventory.ensure(session_id, position, self.provider)
+        self.inventory.update_approach(inv, position)
+        if not inv.places:
+            # Cold/empty disc (Overpass failed or genuinely nothing here) — fall back
+            # to the live adaptive search so the guide never goes dark.
+            return await self.discover_adaptive(
+                position, heading, seen, settings.default_radius_m
+            )
+        candidates = build_candidates(
+            position, heading, inv.places, settings.default_radius_m, seen
+        )
+        if candidates:
+            return DiscoveryResult(
+                candidates, settings.default_radius_m, expanded=False, exhausted=False
+            )
+        # Sparse window: widen to the full cached disc and prefer what's ahead
+        # (drop objects already walked past), so the guide reaches the nearest real
+        # object instead of looping on the area monologue.
+        passed = self.inventory.passed_ids(inv)
+        wide = build_candidates(
+            position, heading, inv.places, settings.inventory_radius_m, seen
+        )
+        ahead = [c for c in wide if c.place.id not in passed]
+        candidates = ahead or wide
+        return DiscoveryResult(
+            candidates, settings.inventory_radius_m, expanded=True, exhausted=not candidates
+        )

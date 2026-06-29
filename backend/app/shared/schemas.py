@@ -74,6 +74,11 @@ class Candidate(BaseModel):
     gaze_confidence: GazeConfidence
     facts_available: bool = False
     facts_snippet: str | None = None
+    # Spatial side relative to heading: "ahead"/"behind" are knowable from the GPS
+    # course; "left"/"right" only when gaze_confidence=high (a real facing/compass).
+    # None means lateral but confidence too low to call a side.
+    relative_bearing_deg: float | None = None
+    side: str | None = None
 
 
 class ControlPatch(BaseModel):
@@ -131,6 +136,7 @@ class NarratorInput(BaseModel):
     facts: str | None = None
     distance_m: float
     heading: Heading = Field(default_factory=Heading)
+    side: str | None = None  # ahead|behind|left|right (left/right only at high gaze)
     pace: Pace = Pace.SLOW
     context: NarrationContext = Field(default_factory=NarrationContext)
     history: list[str] = Field(default_factory=list)
@@ -240,6 +246,7 @@ class SessionState(BaseModel):
     last_candidate_fingerprint: str | None = None  # heuristic gate
     # area-level monologue (general -> specific spine)
     last_geo_pos: GeoPoint | None = None  # where address was last resolved (move-gated)
+    last_street: str | None = None  # last resolved street (a change => weave a transition)
     area_key: str | None = None  # district|city signature; change => new area, reset below
     area_facts: str | None = None  # verified facts about the current area (fetched once)
     area_intro_done: bool = False  # the area opener (+ plan) was already delivered

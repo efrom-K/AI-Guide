@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from app.config import settings
 from app.services.enrichment.enricher import (
     Enricher,
     EnrichmentCache,
@@ -32,7 +33,7 @@ from app.shared.schemas import (
     Significance,
 )
 
-from .narrator import Narrator
+from .narrator import Narrator, split_hook
 from .scorer import Scorer
 from .significance import significance_from_weight
 
@@ -43,6 +44,7 @@ class StepResult:
     decision: ScorerOutput
     place: Place | None
     significance: Significance | None
+    next_hook: str | None = None  # baton to weave into the next paragraph
 
 
 # Atypical-facts-forward area enrichment: lesser-known facts about the district /
@@ -83,6 +85,38 @@ class TextPipeline:
         self.enrich_timeout_s = enrich_timeout_s
         self.area_llm = area_llm
         self.planner = planner
+        self._warm_tasks: set[asyncio.Task] = set()  # hold refs to background warms
+
+    def warm_ahead(self, candidates: list[Candidate], *, address: Address | None = None):
+        """Non-blocking: warm the fact cache for objects the user is walking TOWARD
+        (in the course cone, nearest first), so facts are ready before arrival. A
+        no-op on the mock/inline path (`enrich_top_k is None`). Returns the scheduled
+        task (or None) so callers/tests can await it; the orchestrator ignores it."""
+        if self.enrich_top_k is None or not candidates:
+            return None
+        ahead = [c for c in candidates if c.in_gaze_cone] or candidates
+        ahead = [
+            c
+            for c in sorted(ahead, key=lambda c: c.distance_m)
+            if c.place.id not in self.cache
+        ][: settings.enrich_lookahead_k]
+        if not ahead:
+            return None
+        addr = address or Address()
+        ctx = ", ".join(p for p in (addr.city, addr.country) if p) or None
+        task = asyncio.ensure_future(
+            prefetch(
+                ahead,
+                self.enricher,
+                self.cache,
+                top_k=settings.enrich_lookahead_k,
+                timeout_s=self.enrich_timeout_s,
+                context=ctx,
+            )
+        )
+        self._warm_tasks.add(task)
+        task.add_done_callback(self._warm_tasks.discard)
+        return task
 
     async def step(
         self,
@@ -129,13 +163,14 @@ class TextPipeline:
         if chosen is None:
             return StepResult("", ScorerOutput(), None, None)
         sig = significance_from_weight(chosen.type_weight, chosen.facts_available)
-        text = await self.narrator.narrate(
+        raw = await self.narrator.narrate(
             NarratorInput(
                 place=chosen.place,
                 significance=sig,
                 facts=chosen.facts_snippet,
                 distance_m=chosen.distance_m,
                 heading=heading or Heading(),
+                side=chosen.side,
                 pace=pace,
                 context=_context(addr),
                 theme=theme,
@@ -150,7 +185,8 @@ class TextPipeline:
                 language=lang,
             )
         )
-        return StepResult(text, ScorerOutput(), chosen.place, sig)
+        text, hook = split_hook(raw)
+        return StepResult(text, ScorerOutput(), chosen.place, sig, next_hook=hook)
 
     async def elaborate(
         self,
@@ -180,7 +216,7 @@ class TextPipeline:
                 context=ctx,
             )
             facts = self.cache.get(place.id)
-        return await self.narrator.narrate(
+        raw = await self.narrator.narrate(
             NarratorInput(
                 place=place,
                 significance=significance,
@@ -194,6 +230,8 @@ class TextPipeline:
                 language=lang,
             )
         )
+        text, _ = split_hook(raw)  # elaborate stays on the same place; drop the hook
+        return text
 
     async def narrate_area(
         self,
@@ -208,10 +246,11 @@ class TextPipeline:
         history: list[str],
         pace: Pace = Pace.SLOW,
         language: str | None = None,
-    ) -> str:
+    ) -> tuple[str, str | None]:
         """One beat of the area-level monologue — advance the story arc by one
-        topic, staying inside the theme. Returns "" for silence."""
-        return await self.narrator.narrate_area(
+        topic, staying inside the theme. Returns (spoken_text, next_hook); spoken
+        text is "" for silence."""
+        raw = await self.narrator.narrate_area(
             AreaInput(
                 address=address,
                 facts=facts,
@@ -225,6 +264,7 @@ class TextPipeline:
                 language=language or self.language,
             )
         )
+        return split_hook(raw)
 
     async def make_plan(
         self, address: Address, *, facts: str | None, theme_override: str | None, language: str | None = None

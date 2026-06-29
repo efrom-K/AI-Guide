@@ -156,6 +156,86 @@ def test_geocoder_retries_after_empty_then_resolves():
     asyncio.run(run())
 
 
+def test_street_change_weaves_transition_without_resetting_arc():
+    """E: stepping onto a new street within the SAME district sets a transition
+    baton (next_hook) and keeps the running arc, instead of a hard reset + opener.
+    A district change still resets the arc."""
+    orch = _orch([])
+
+    class Geo:
+        def __init__(self):
+            self.addr = Address(city="Москва", district="Тверской", street="Тверская")
+
+        async def reverse(self, point, language="ru"):
+            return self.addr
+
+    geo = Geo()
+    orch.geocoder = geo
+
+    async def run():
+        st = await orch.store.load("street")
+        await orch._resolve_area(st, HERE)  # first resolve -> establishes the area
+        assert st.last_street == "Тверская"
+        st.area_intro_done = True  # pretend the area opener has played
+        st.narrative_plan.outline = ["t1"]
+        arc = st.narrative_plan
+        # move >150 m; new street, SAME district -> woven transition, no reset
+        geo.addr = Address(city="Москва", district="Тверской", street="Камергерский")
+        far = GeoPoint(lat=HERE.lat + 0.002, lon=HERE.lon)
+        await orch._resolve_area(st, far)
+        assert st.narrative_plan is arc  # arc NOT reset
+        assert st.narrative_plan.outline == ["t1"]
+        assert st.last_street == "Камергерский"
+        assert "Камергерский" in (st.narrative_plan.next_hook or "")
+        # now a DISTRICT change -> fresh arc
+        geo.addr = Address(city="Москва", district="Арбат", street="Арбат")
+        farther = GeoPoint(lat=HERE.lat + 0.004, lon=HERE.lon)
+        await orch._resolve_area(st, farther)
+        assert st.narrative_plan is not arc  # reset on new district
+        assert st.area_intro_done is False
+
+    asyncio.run(run())
+
+
+def test_warm_ahead_caches_in_cone_objects_nonblocking():
+    """B: facts for objects you're walking TOWARD (in the course cone) are warmed
+    into the cache ahead of arrival; out-of-cone objects are not prioritised."""
+    from app.services.enrichment.enricher import EnrichmentCache
+    from app.shared.schemas import Candidate, GazeConfidence
+
+    class FakeEnricher:
+        async def facts_for(self, place, context=None):
+            return f"facts:{place.id}"
+
+    def cand(pid, dist, cone):
+        return Candidate(
+            place=_place(pid, pid, "monument"),
+            distance_m=dist,
+            type_weight=0.9,
+            in_gaze_cone=cone,
+            gaze_confidence=GazeConfidence.LOW,
+        )
+
+    async def run():
+        cache = EnrichmentCache()
+        pipe = TextPipeline(
+            HeuristicScorer(), TemplateNarrator(), FakeEnricher(),
+            cache=cache, enrich_top_k=2, enrich_timeout_s=5.0,
+        )
+        task = pipe.warm_ahead([cand("a", 50, True), cand("b", 120, True), cand("c", 80, False)])
+        assert task is not None
+        await task
+        assert cache.get("a") == "facts:a"  # in-cone -> warmed
+        assert cache.get("b") == "facts:b"
+        assert cache.get("c") is None  # out-of-cone -> not prioritised
+
+        # mock/inline path (enrich_top_k=None) must be a no-op (no background work)
+        inline = TextPipeline(HeuristicScorer(), TemplateNarrator(), FakeEnricher())
+        assert inline.warm_ahead([cand("a", 50, True)]) is None
+
+    asyncio.run(run())
+
+
 def test_connective_area_beats_fill_pause_until_budget():
     """#1: once the planned outline is exhausted, the guide keeps filling the pause
     with connective area/city beats (varied angles) up to a per-lull budget, instead
@@ -163,7 +243,7 @@ def test_connective_area_beats_fill_pause_until_budget():
     orch = _orch([])
 
     async def fake_narrate_area(address, **kw):
-        return f"connective beat: {kw['topic']}"
+        return f"connective beat: {kw['topic']}", None  # (spoken, next_hook)
 
     orch.pipeline.narrate_area = fake_narrate_area
 

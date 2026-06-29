@@ -8,8 +8,10 @@ Both return "" for silence (the [SILENCE] sentinel is normalized away).
 
 from __future__ import annotations
 
+import re
 from typing import Protocol
 
+from app.config import settings
 from app.services.llm.client import LLMClient
 from app.services.llm.router import Role
 from app.shared.schemas import AreaInput, NarratorInput, Significance
@@ -19,9 +21,33 @@ from .significance import role_for_significance
 
 SILENCE = "[SILENCE]"
 
+# Cross-paragraph baton: the Narrator appends an internal "HOOK: ..." line that we
+# strip from the spoken text and hand to the next paragraph as `next_hook`, so the
+# tour reads as one woven monologue instead of independently-improvised paragraphs.
+_HOOK_INSTR = (
+    "\n\nВ САМОМ КОНЦЕ ответа, отдельной последней строкой, добавь служебную "
+    "связку-крючок к следующему фрагменту рассказа в формате `HOOK: <2-6 слов>` "
+    "на языке рассказа. Это ВНУТРЕННЯЯ пометка: она НЕ произносится и не входит в "
+    "сам рассказ. Если связки нет — строку HOOK не добавляй."
+)
+_HOOK_RE = re.compile(r"(?im)^[ \t]*HOOK:[ \t]*(.*?)[ \t]*$")
+
+
+def split_hook(text: str) -> tuple[str, str | None]:
+    """Split a trailing `HOOK: ...` line off the narration. Returns (spoken, hook).
+    No HOOK line -> (text, None). Safe on already-normalized/empty text."""
+    if not text:
+        return text, None
+    m = _HOOK_RE.search(text)
+    if m is None:
+        return text, None
+    hook = (m.group(1) or "").strip() or None
+    spoken = (text[: m.start()] + text[m.end() :]).strip()
+    return spoken, hook
+
 # very rough per-category openers for the template fallback (no facts case)
 _GENERIC = {
-    "park": "Слева небольшой сквер — обычное место, чтобы перевести дух.",
+    "park": "Тут небольшой сквер — обычное место, чтобы перевести дух.",
     "garden": "Тут рядом садик, ничего особенного, но приятно.",
     "shop": "",  # commercial without facts → stay silent
     "cafe": "",
@@ -88,6 +114,8 @@ class LLMNarrator:
                 return ""  # already covered this place — never repeat
         role = role_for_significance(inp.significance)
         system = system_for(role, inp.language)
+        if settings.narrator_emit_hook:
+            system += _HOOK_INSTR
         user = build_narrator_user(inp)
         text = await self._llm.complete_text(role, system, user)
         return normalize(text)
@@ -96,6 +124,8 @@ class LLMNarrator:
         # the area monologue runs through the Narrator role/model (it's narration);
         # facts may be empty -> the prompt allows safe general knowledge of the city.
         system = system_for_area(inp.language)
+        if settings.narrator_emit_hook:
+            system += _HOOK_INSTR
         user = build_area_user(inp)
         text = await self._llm.complete_text(Role.NARRATOR, system, user)
         return normalize(text)

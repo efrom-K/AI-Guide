@@ -21,6 +21,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:record/record.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'compass.dart';
 import 'l10n/app_localizations.dart';
 
 void main() => runApp(const GuideApp());
@@ -56,6 +57,9 @@ String _genSessionId() {
 const kDefaultWsUrl = String.fromEnvironment('WS_URL', defaultValue: 'ws://localhost:8000/ws');
 // Shared access token for the /ws endpoint ('' => open). Baked in at build time.
 const kWsToken = String.fromEnvironment('WS_TOKEN', defaultValue: '');
+// Test-only: when set to a kRoutes key, the app auto-enables the simulated walk on
+// that route and starts it on launch (for emulator acceptance runs). Empty = off.
+const kAutoWalkRoute = String.fromEnvironment('AUTO_WALK_ROUTE', defaultValue: '');
 
 // True under `flutter test` — lets us skip live map-tile network there.
 bool _underTest() {
@@ -149,13 +153,47 @@ const List<({String code, String label})> kThemes = [
   (code: 'легенды и тайны', label: '🕯 Легенды'),
 ];
 
-// Demo route: a real Moscow walk, waypoints joined in order (straight segments).
-const List<List<double>> kRoute = [
-  [55.725789, 37.685192],
-  [55.728789, 37.677015],
-  [55.741959, 37.653943],
-  [55.732312, 37.639737],
-];
+// Demo/test routes: real Moscow walks, waypoints joined in order (straight
+// segments). Selectable in Settings when "simulated walk" is on; played back at
+// kWalkSpeedMps (~7 km/h). R5 is the original demo route.
+const Map<String, List<List<double>>> kRoutes = {
+  'r1': [
+    [55.792815, 37.587988],
+    [55.795015, 37.584619],
+    [55.808762, 37.580492],
+  ],
+  'r2': [
+    [55.922993, 37.529511],
+    [55.903751, 37.540102],
+    [55.897771, 37.551916],
+  ],
+  'r3': [
+    [55.639642, 37.793154],
+    [55.639741, 37.801981],
+    [55.637460, 37.801954],
+  ],
+  'r4': [
+    [55.847738, 37.584899],
+    [55.842658, 37.584763],
+    [55.842470, 37.586884],
+    [55.835994, 37.590916],
+  ],
+  'r5': [
+    [55.725789, 37.685192],
+    [55.728789, 37.677015],
+    [55.741959, 37.653943],
+    [55.732312, 37.639737],
+  ],
+};
+// Display labels for the route picker (keys are ASCII so they pass cleanly via
+// --dart-define on every platform).
+const Map<String, String> kRouteLabels = {
+  'r1': 'Маршрут 1',
+  'r2': 'Маршрут 2',
+  'r3': 'Маршрут 3',
+  'r4': 'Маршрут 4',
+  'r5': 'Маршрут 5 (демо)',
+};
 
 const double kWalkSpeedMps = 1.95; // ~7 km/h (brisk human pace)
 const double kStepM = 8; // metres between simulated GPS fixes (matches the real distanceFilter)
@@ -184,7 +222,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   // Position source: false = real device GPS (default), true = simulated route.
   bool _simulate = false;
+  String _routeKey = kRoutes.keys.first; // which simulated route to walk
   StreamSubscription<Position>? _gpsSub;
+
+  // Device compass (real GPS only): when the phone is held up and steady, we send
+  // its facing as the heading with gaze_confidence=high so the guide can say
+  // "left/right"; otherwise we fall back to the GPS course (low).
+  final CompassService _compass = CompassService();
+  StreamSubscription<CompassReading>? _compassSub;
+  CompassReading? _compassReading;
 
   // On-device TTS — the guide speaks the narration aloud.
   final FlutterTts _tts = FlutterTts();
@@ -235,6 +281,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     // Ask for mic + location up front and centre the map on the real position,
     // rather than sitting on the Moscow default until a walk starts.
     WidgetsBinding.instance.addPostFrameCallback((_) => _initLocationAndPermissions());
+    // Test-only headless acceptance run: auto-select the route and start walking.
+    if (kAutoWalkRoute.isNotEmpty && kRoutes.containsKey(kAutoWalkRoute)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        setState(() {
+          _simulate = true;
+          _routeKey = kAutoWalkRoute;
+        });
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted && !_active) _primary();
+        });
+      });
+    }
   }
 
   Future<void> _initLocationAndPermissions() async {
@@ -555,16 +613,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   List<Map<String, double>> _buildPoints() {
     const stepM = kStepM;
+    final route = kRoutes[_routeKey] ?? kRoutes.values.first;
     final pts = <Map<String, double>>[];
-    for (var i = 0; i < kRoute.length - 1; i++) {
-      final a = kRoute[i], b = kRoute[i + 1];
+    for (var i = 0; i < route.length - 1; i++) {
+      final a = route[i], b = route[i + 1];
       final len = _dist(a, b), brg = _bearing(a, b);
       for (var t = 0.0; t < len; t += stepM) {
         final f = t / len;
         pts.add({'lat': a[0] + (b[0] - a[0]) * f, 'lon': a[1] + (b[1] - a[1]) * f, 'dir': brg});
       }
     }
-    final last = kRoute.last;
+    final last = route.last;
     pts.add({'lat': last[0], 'lon': last[1], 'dir': 0});
     return pts;
   }
@@ -589,14 +648,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     setState(() {});
   }
 
-  // Send a position and reflect it on the map.
-  void _sendPosition(double lat, double lon, double dir, String pace) {
+  // Send a position and reflect it on the map. `gaze` is 'low' by default (GPS
+  // course / simulated walk); the real-GPS path passes 'high' when the held-up
+  // compass gives a trustworthy facing.
+  void _sendPosition(double lat, double lon, double dir, String pace,
+      {String gaze = 'low'}) {
     _send({
       'type': 'position',
       'lat': lat,
       'lon': lon,
       'direction_deg': dir,
-      'gaze_confidence': 'low',
+      'gaze_confidence': gaze,
       'pace': pace,
     });
     setState(() {
@@ -632,14 +694,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       return;
     }
 
+    // Start the compass so a held-up phone yields a real facing (left/right).
+    _compass.start();
+    _compassSub ??= _compass.readings.listen((r) => _compassReading = r);
     const settings = LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5);
     _gpsSub = Geolocator.getPositionStream(locationSettings: settings).listen(
-      (pos) => _sendPosition(
-        pos.latitude,
-        pos.longitude,
-        pos.heading >= 0 ? pos.heading : 0.0,
-        pos.speed > 1.5 ? 'fast' : 'slow',
-      ),
+      (pos) {
+        // Prefer the compass facing when it's confident; else the GPS course.
+        final cr = _compassReading;
+        final useCompass = cr != null && cr.confident;
+        final dir = useCompass
+            ? cr.headingDeg
+            : (pos.heading >= 0 ? pos.heading : 0.0);
+        _sendPosition(
+          pos.latitude,
+          pos.longitude,
+          dir,
+          pos.speed > 1.5 ? 'fast' : 'slow',
+          gaze: useCompass ? 'high' : 'low',
+        );
+      },
       onError: (e) => _add('meta', l.metaGpsError('$e')),
     );
     _add('meta', l.metaRealGpsOn);
@@ -651,6 +725,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _walkTimer = null;
     _gpsSub?.cancel();
     _gpsSub = null;
+    _compass.stop();
+    _compassReading = null;
     setState(() {});
   }
 
@@ -760,6 +836,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void dispose() {
     _walkTimer?.cancel();
     _gpsSub?.cancel();
+    _compassSub?.cancel();
+    _compass.dispose();
     _reconnectTimer?.cancel();
     _heartbeat?.cancel();
     _audioSub?.cancel();
@@ -1276,6 +1354,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 setSheet(() {});
               },
             ),
+            if (_simulate)
+              DropdownButtonFormField<String>(
+                initialValue: _routeKey,
+                decoration: InputDecoration(
+                  labelText: 'Маршрут',
+                  filled: true,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                items: [
+                  for (final k in kRoutes.keys)
+                    DropdownMenuItem(value: k, child: Text(kRouteLabels[k] ?? k)),
+                ],
+                onChanged: _active
+                    ? null
+                    : (v) {
+                        if (v == null) return;
+                        setState(() => _routeKey = v);
+                        setSheet(() {});
+                      },
+              ),
           ]),
         ),
       ),

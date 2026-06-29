@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     # Area-level monologue (the spine that fills gaps between objects)
     area_enrich: bool = True  # fetch verified facts about the district/city (web search)
     area_max_beats: int = 4  # area beats per area before easing off (objects reset this)
+    # Activate the cross-paragraph "next_hook" baton: the Narrator emits a short
+    # internal HOOK: line that we strip from speech and hand to the next paragraph,
+    # so transitions are woven rather than improvised cold. Kept on the creative
+    # (temperature) text path — not JSON — so prose quality is unaffected.
+    narrator_emit_hook: bool = True
 
     # Wiring (which implementations the orchestrator factory builds)
     agent_backend: str = "heuristic"  # heuristic | openai | anthropic
@@ -73,7 +78,11 @@ class Settings(BaseSettings):
     # timeout, and results are cached (in-memory + optional JSON file).
     web_search_max_results: int = 2  # web results per place (OpenRouter bills per result)
     web_search_max_tokens: int = 400
-    enrich_top_k: int = 2  # how many top-ranked candidates to enrich per tick
+    enrich_top_k: int = 2  # how many top-ranked candidates to enrich per tick (current narration)
+    # Look-ahead fact warming: facts for objects you're walking TOWARD (in the course
+    # cone, within the live window) are fetched in the background so they're cached
+    # before you arrive — narration on approach is then instant, not a cold web search.
+    enrich_lookahead_k: int = 4
     enrich_timeout_s: float = 9.0  # web search needs ~5-7s; give it time so facts arrive
     # Wiki facts are always free; this only gates the PAID web-search fallback for
     # places WITHOUT a wiki article: search them iff type_weight >= this. 0 = full
@@ -105,6 +114,17 @@ class Settings(BaseSettings):
     # Cap how many (nearest) candidates are considered per tick — bounds the
     # Scorer's input/output size (its JSON grows linearly with candidate count).
     scorer_max_candidates: int = 6
+
+    # Per-session object inventory — decouples Overpass from the hot path. A wide
+    # disc of places is fetched once and reused for every tick (ranking against the
+    # live position is free); Overpass is re-hit only when the user walks past
+    # `inventory_refetch_frac` of the disc radius from the anchor it was fetched at.
+    inventory_enabled: bool = True
+    inventory_radius_m: float = 800.0  # wide prefetch disc cached per session
+    inventory_refetch_frac: float = 0.5  # re-fetch after moving > frac*radius from the anchor
+    inventory_pass_margin_m: float = 40.0  # recede this far past closest-approach => "passed"
+    inventory_ttl_s: float = 3600.0  # evict idle session inventories
+    inventory_max_sessions: int = 2000  # LRU cap on cached inventories
 
     # State store ("" => in-memory)
     redis_url: str = ""

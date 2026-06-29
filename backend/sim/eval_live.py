@@ -110,6 +110,13 @@ async def main(n: int) -> None:
                 lambda _: _text_ok(narrator, _narr(), lambda t: bool(t)))
     await check("Narrator: нет лево/право при low-gaze", range(n),
                 lambda _: _text_ok(narrator, _narr(), lambda t: not _LR.search(t)))
+    await check("Narrator: говорит сторону при high-gaze (right→справа)", range(n),
+                lambda _: _text_ok(
+                    narrator,
+                    _narr(heading=Heading(direction_deg=90.0,
+                                          gaze_confidence=GazeConfidence.HIGH),
+                          side="right"),
+                    lambda t: "справа" in t.lower() and "слева" not in t.lower()))
     await check("Narrator: [SILENCE] при nothing_new", range(n),
                 lambda _: _text_ok(
                     narrator,
