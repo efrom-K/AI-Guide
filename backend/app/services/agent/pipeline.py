@@ -34,6 +34,7 @@ from app.shared.schemas import (
     Significance,
 )
 
+from .languages import display_name
 from .narrator import Narrator, split_hook
 from .scorer import Scorer
 from .significance import significance_from_weight
@@ -165,10 +166,16 @@ class TextPipeline:
         )
         if chosen is None:
             return StepResult("", ScorerOutput(), None, None)
+        # Localize the title to the session language (name:<lang> -> name:en -> raw).
+        # One swap here feeds BOTH the spoken name (narrator) and the displayed title
+        # (StepResult.place -> place_name frame) — and st.last_place downstream.
+        place = chosen.place.model_copy(
+            update={"name": display_name(chosen.place.tags, chosen.place.name, lang)}
+        )
         sig = significance_from_weight(chosen.type_weight, chosen.facts_available)
         raw = await self.narrator.narrate(
             NarratorInput(
-                place=chosen.place,
+                place=place,
                 significance=sig,
                 facts=chosen.facts_snippet,
                 distance_m=chosen.distance_m,
@@ -190,7 +197,7 @@ class TextPipeline:
             )
         )
         text, hook = split_hook(raw)
-        return StepResult(text, ScorerOutput(), chosen.place, sig, next_hook=hook)
+        return StepResult(text, ScorerOutput(), place, sig, next_hook=hook)
 
     async def elaborate(
         self,
@@ -206,6 +213,9 @@ class TextPipeline:
         """Tell MORE about an already-covered place (nothing new nearby). Reuses
         cached facts; the narrator adds a fresh detail, avoiding HISTORY."""
         lang = language or self.language
+        # Re-localize in case the language changed since this place was first narrated
+        # (idempotent when it didn't). Facts cache is keyed by id, so this is free.
+        place = place.model_copy(update={"name": display_name(place.tags, place.name, lang)})
         addr = address or Address()
         facts = self.cache.get(place.id)
         if facts is None:

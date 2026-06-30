@@ -40,3 +40,23 @@ def test_cascade_strings_ru_identical_others_english():
     assert "city Paris" in lang.area_topic("fr", "city", "Paris")
     assert lang.street_hook("de", "Hauptstraße") == "stepping onto Hauptstraße"
     assert lang.area_intro_told("es") == "area intro"
+
+
+def test_display_name_follows_session_language():
+    # A Moscow POI: raw name is Russian, with localized name:<lang> tags available.
+    tags = {
+        "name": "Красная площадь",
+        "name:en": "Red Square",
+        "name:de": "Roter Platz",
+    }
+    raw = tags["name"]
+    # Session language wins when present...
+    assert lang.display_name(tags, raw, "de") == "Roter Platz"
+    # ...else the English exonym...
+    assert lang.display_name(tags, raw, "fr") == "Red Square"
+    # ...and the raw local name only as a last resort (no en, no name:<lang>).
+    assert lang.display_name({"name": raw}, raw, "en") == raw
+    # A native-language session keeps the original.
+    assert lang.display_name(tags, raw, "ru") == "Красная площадь"
+    # Unknown/empty code falls back to English (normalize -> en).
+    assert lang.display_name(tags, raw, None) == "Red Square"

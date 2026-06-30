@@ -37,6 +37,32 @@ def prompt_language(code: str | None) -> str:
     return PROMPT_NAME[normalize(code)]
 
 
+def display_name(tags: dict[str, str], fallback: str, code: str | None) -> str:
+    """Localized display name for a POI / place.
+
+    The raw OSM ``name`` tag is in the LOCAL language (Russian in Moscow, Greek in
+    Athens, ...), so a walker who picked English would otherwise see/hear Cyrillic
+    titles. Resolution:
+
+    1. ``name:<session-lang>`` — an exact match in the chosen language is always best.
+    2. Otherwise the raw local ``name`` for a **Russian** session: Russia is the
+       primary deployment region, where the raw tag is already Russian, so a RU
+       walker must keep the authentic Cyrillic name (never the English exonym).
+    3. For any other (international) session with no name in its language, the English
+       exonym ``name:en`` is far more useful than a raw foreign-script title; the raw
+       ``name`` is only the last resort.
+
+    The ``name:<lang>`` tags must be kept on the Place (see ``KEEP_TAGS`` in
+    geo/categories.py). Compare geocoder ``_name``, which localizes street/city names."""
+    lang = normalize(code)
+    exact = tags.get(f"name:{lang}")
+    if exact:
+        return exact
+    if lang == "ru":
+        return fallback  # raw tag is the authentic Russian name in the home region
+    return tags.get("name:en") or fallback
+
+
 # --- Spoken-verbatim strings ------------------------------------------------- #
 # These reach the user WITHOUT passing through the LLM (the narrator re-expresses
 # facts in {language}, but these are emitted as-is), so they MUST be localized.

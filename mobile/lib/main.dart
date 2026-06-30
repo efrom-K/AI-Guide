@@ -1220,6 +1220,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   // -- map ----------------------------------------------------------------
   Widget _mapView() {
+    // CARTO light/dark basemaps — the light (Positron) and dark (Dark Matter)
+    // counterparts share the exact same tile path, so the light theme is as
+    // reliable as the dark one we already shipped. The ValueKey forces flutter_map
+    // to rebuild the tile layer (re-fetch tiles) when the theme flips.
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final tileUrl = dark
+        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'
+        : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png';
     return FlutterMap(
       mapController: _map,
       options: MapOptions(
@@ -1239,7 +1247,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       children: [
         if (!_underTest())
           TileLayer(
-            urlTemplate: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+            key: ValueKey(dark),
+            urlTemplate: tileUrl,
             subdomains: const ['a', 'b', 'c'],
             userAgentPackageName: 'com.example.ai_audio_guide',
           ),
@@ -1638,18 +1647,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: _c(context).sheetBg,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      // Transparent here so the panel colour is painted INSIDE the StatefulBuilder
+      // below — that way the sheet recolours live when the theme is switched from
+      // its own toggle (a fixed backgroundColor would stay the old colour until
+      // the sheet is closed and reopened).
+      backgroundColor: Colors.transparent,
       builder: (ctx) => StatefulBuilder(
-        builder: (c, setSheet) => Padding(
-          padding: EdgeInsets.fromLTRB(16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 24),
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        builder: (c, setSheet) {
+          final cc = _c(context); // re-read on every (setSheet) rebuild → live theme
+          return Container(
+            decoration: BoxDecoration(
+              color: cc.sheetBg,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            padding: EdgeInsets.fromLTRB(16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 24),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(l.settings, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
             const SizedBox(height: 16),
             Text(l.appearance,
                 style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w600, color: _c(context).textSecondary)),
+                    fontSize: 13, fontWeight: FontWeight.w600, color: cc.textSecondary)),
             const SizedBox(height: 8),
             SizedBox(
               width: double.infinity,
@@ -1708,7 +1725,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       },
               ),
           ]),
-        ),
+          );
+        },
       ),
     );
   }

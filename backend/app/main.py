@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config import settings
 from app.services.agent.factory import build_orchestrator
-from app.services.agent.languages import normalize, stt_unclear
+from app.services.agent.languages import display_name, normalize, stt_unclear
 from app.services.agent.orchestrator import Orchestrator, OrchestratorOutput, merge_patch
 from app.services.llm.client import METER, SESSION_ID
 from app.services.stt.stt import STTClient, build_stt
@@ -253,10 +253,15 @@ class _SessionRuntime:
             return
         if not places:
             return
+        # Localize the pin labels to the session language, same as the narration title.
+        try:
+            language = (await self.orch.store.load(self.session_id)).language
+        except Exception:
+            language = None
         items = [
             {
                 "id": p.id,
-                "name": p.name,
+                "name": display_name(p.tags, p.name, language),
                 "category": p.category,
                 "lat": p.location.lat,
                 "lon": p.location.lon,

@@ -94,11 +94,21 @@ WEIGHT_BY_CATEGORY: dict[str, float] = {
 }
 DEFAULT_WEIGHT = 0.2
 
-# tags worth keeping on the Place (used by enrichment later)
+# tags worth keeping on the Place (used by enrichment later, and by
+# languages.display_name to localize the title to the session language — so we keep
+# the localized name:<lang> tags for every supported guide language, not just en).
 KEEP_TAGS = frozenset(
     {
         "name",
         "name:en",
+        "name:ru",
+        "name:es",
+        "name:fr",
+        "name:de",
+        "name:it",
+        "name:pt",
+        "name:zh",
+        "int_name",
         "wikidata",
         "wikipedia",
         "tourism",
