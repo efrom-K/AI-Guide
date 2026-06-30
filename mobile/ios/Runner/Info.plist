@@ -77,11 +77,18 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Lets you ask the guide a question by voice.</string>
 	<!-- Background operation: keep the GPS stream and on-device narration alive while
-	     the screen is locked, so you can walk with an earbud and the phone in a pocket. -->
+	     the screen is locked, so you can walk with an earbud and the phone in a pocket.
+	     location+audio keep us alive on a walk; fetch is required by flutter_foreground_task. -->
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
 		<string>audio</string>
+		<string>fetch</string>
+	</array>
+	<!-- Required by flutter_foreground_task for its background refresh task. -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.pravera.flutter_foreground_task.refresh</string>
 	</array>
 	<!-- Allow ws:// (cleartext) for LAN/dev testing. For an App Store build with a
 	     wss:// host you can remove this and rely on default ATS (TLS only). -->

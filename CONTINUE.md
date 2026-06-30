@@ -255,12 +255,17 @@ MVP-позиция; реальный бэкстоп — **спенд-капы**,
   без своего уведомления (его даёт FG-сервис). На `Stop` поток + сервис + карточка исчезают.
 - **`_initTts`**: на iOS audio-session `playback` (+ `duckOthers`, `allowBluetoothA2DP`,
   `allowAirPlay`, mode `spokenAudio`) — озвучка играет в наушник при локе и приглушает музыку.
-- **iOS `Info.plist`**: `UIBackgroundModes = [location, audio]` + `NSLocationAlwaysAndWhenInUse…`.
+- **iOS `Info.plist`**: `UIBackgroundModes = [location, audio, fetch]` +
+  `NSLocationAlwaysAndWhenInUse…` + `BGTaskSchedulerPermittedIdentifiers`
+  (`com.pravera.flutter_foreground_task.refresh`). **`AppDelegate.swift`**: добавлен
+  `SwiftFlutterForegroundTaskPlugin.setPluginRegistrantCallback{…}` + `UNUserNotificationCenter`
+  delegate (адаптировано под наш новый implicit-engine `AppDelegate`).
 - **Локализация уведомления**: `bgNotifTitle`/`bgNotifText`/`bgNotifPaused`/`bgPause`/`bgResume`
   в 8 ARB (`flutter gen-l10n` перегенерил `lib/l10n/app_localizations.dart` — он в гите).
 
 Проверки: `flutter analyze` чисто, `flutter test` зелёный, release-APK собирается. (Полевой тест
-на реальном телефоне с заблокированным экраном — за пользователем.)
+на реальном телефоне с заблокированным экраном — за пользователем. iOS-сборку проверить на Mac —
+см. ниже.)
 
 Гочи/ограничения:
 - **Постоянное уведомление обязательно** на Android для FG-сервиса — убрать нельзя, это плата
@@ -275,6 +280,24 @@ MVP-позиция; реальный бэкстоп — **спенд-капы**,
   **сервис всё равно работает**. Рантайм-запрос не добавлял (без `permission_handler`).
 - **Web фон не умеет** (нет FG-сервиса; вкладка в локе засыпает) — фон только в APK/iOS, веб
   остаётся для быстрых проверок.
+
+**iOS-сборка (только на macOS + Xcode — на Windows .ipa собрать НЕЛЬЗЯ; здесь лишь
+сконфигурирован проект).** iOS deployment target **13.0** (хватает для geolocator/flutter_tts/
+flutter_foreground_task). Что готово в репозитории: `Info.plist` (location/mic usage-строки,
+`UIBackgroundModes location/audio/fetch`, `NSLocationAlwaysAndWhenInUse…`, BGTaskScheduler id),
+`AppDelegate.swift` (регистрация FG-task плагина + notification-delegate). Шаги на Mac:
+```bash
+flutter pub get
+cd ios && pod install && cd ..                 # CocoaPods тянет нативные поды
+open ios/Runner.xcworkspace                     # один раз: выбрать Team + Bundle ID (подпись)
+flutter build ipa --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws   # релиз-сборка на прод
+# или прогон на подключённом устройстве/симуляторе:
+flutter run -d <device-id> --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws
+```
+Нужен Apple Developer аккаунт (бесплатный тир — для теста на своём устройстве; App Store/
+TestFlight — платный $99/год). Для реального фона с локом выдать **«Always»** локацию в
+настройках iOS (приложение сначала спрашивает «При использовании»). Сборку IPA/заливку в
+TestFlight делает Xcode / `flutter build ipa` — это шаг для платного аккаунта.
 
 ---
 

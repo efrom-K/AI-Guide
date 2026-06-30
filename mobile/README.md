@@ -35,11 +35,20 @@ an **OpenStreetMap** map, lets you **ask by voice or text**, and runs in **8 lan
   backoff is built in, plus a **keepalive ping** (so an idle socket isn't reaped mid-walk) and a
   stable per-launch **session id** sent as `?sid=` so a dropped link **resumes the same tour**
   (no repeated narration) instead of starting over.
+- **Background operation (screen locked)** — keep walking with the phone in a pocket and an
+  earbud in. A foreground **LOCATION** service (`flutter_foreground_task`, type `location`) holds
+  the process alive so GPS, the WebSocket and TTS keep running with the screen off; a shade card
+  ("AI Audio Guide — telling you about places around you") shows a **Pause / Resume** button.
+  Pause stops the narration and freezes the paced tour; Resume continues. Stopping the walk
+  removes the card. (Android/iOS only — web tabs sleep when locked.)
 
 ## Platforms
 - ✅ **Android** — builds an APK, runs on the `guide_emu` emulator (and real devices).
+  Background-while-locked operation supported.
+- ✅ **iOS** — builds from source on **macOS + Xcode** (background modes + audio session
+  configured; see *iOS build* below). Not buildable from Windows/Linux.
 - ✅ **Web / Windows desktop** — `flutter run -d chrome` / `-d windows` (mic/GPS/audio vary
-  by platform; the simulated walk always works).
+  by platform; the simulated walk always works; no background-while-locked on web).
 
 ## Run
 1. Start the backend on `:8000` (see `../backend`, host `0.0.0.0` for devices/emulator).
@@ -59,6 +68,25 @@ an **OpenStreetMap** map, lets you **ask by voice or text**, and runs in **8 lan
 WS URL defaults to `ws://localhost:8000/ws` (works on the emulator via `adb reverse`).
 On a real phone, set it in ⚙ Settings → `ws://<reachable-backend>:8000/ws`.
 
+## iOS build (macOS + Xcode only)
+iOS binaries **cannot** be built on Windows/Linux. The iOS project is fully configured
+(deployment target **13.0**; `Info.plist` has location/mic usage strings, `UIBackgroundModes`
+`location`/`audio`/`fetch`, and the `flutter_foreground_task` `BGTaskScheduler` id;
+`AppDelegate.swift` registers the foreground-task plugin). On a Mac:
+```bash
+flutter pub get
+cd ios && pod install && cd ..          # CocoaPods resolves the native pods
+open ios/Runner.xcworkspace             # set your Team / Bundle ID for signing (once)
+# Device build (signed) baked to the prod backend:
+flutter build ipa --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws
+# …or run on a tethered device / simulator:
+flutter run -d <device-id> --dart-define=WS_URL=wss://178.83.121.62.sslip.io/ws
+```
+Signing needs an Apple Developer account (free tier works for on-device testing; the App
+Store needs a paid one). For real background location with the screen off, grant **Always**
+location in iOS Settings (the app requests *When Using* first). TestFlight/App Store
+distribution is a paid-account step done from Xcode / `flutter build ipa`.
+
 ## Checks
 ```bash
 flutter analyze
@@ -68,8 +96,10 @@ flutter build apk --debug
 
 ## Dependencies
 `web_socket_channel` (WS), `geolocator` (GPS), `flutter_tts` (speech), `record` +
-`path_provider` (mic), `flutter_map` + `latlong2` (OpenStreetMap), `flutter_localizations` +
-`intl` (8-language UI via `gen-l10n`).
+`path_provider` (mic), `flutter_map` + `latlong2` (OpenStreetMap), `flutter_foreground_task`
+(background-while-locked service + Pause-button shade card), `sensors_plus` (compass facing),
+`shared_preferences` (saved theme/language), `flutter_localizations` + `intl` (8-language UI
+via `gen-l10n`).
 
 ## Notes
 - `android/gradle.properties` sets `kotlin.incremental=false` — required when the pub cache
@@ -77,6 +107,11 @@ flutter build apk --debug
   with "this and base files have different roots".
 - Public OSM tiles are fine for the prototype but not for production load — switch to a tile
   provider or self-host before shipping.
+- **Background operation** needs the ongoing notification (Android requires it for a foreground
+  service — it disappears on Stop). Aggressive-battery OEMs (Samsung/Xiaomi/Huawei) can still
+  freeze the service: the app asks once to ignore battery optimization; if background drops,
+  disable battery optimization for the app in system settings. Voice barge-in while pocketed
+  isn't supported (the screen is off — nothing to tap); passive listening is.
 
 ## Next (real device)
 Run on a physical phone for real GPS, the system TTS voices, and the microphone (the

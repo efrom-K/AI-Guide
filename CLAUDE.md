@@ -16,7 +16,8 @@ LLMs (OpenRouter) or a local model (LM Studio), and the Flutter app builds to an
 ## Repository layout
 
 - `backend/` — FastAPI + asyncio + WebSocket server; the orchestrator and all agent logic.
-- `mobile/` — Flutter client (Android/web/Windows): full-screen OSM map, on-device TTS/STT, 8 languages.
+- `mobile/` — Flutter client (Android/iOS/web/Windows): full-screen OSM map, on-device TTS/STT,
+  8 languages, background-while-locked walking (foreground service + Pause-button shade card).
 - `deploy/` — Caddy + docker-compose for the prod host: Caddy terminates TLS, **serves the
   Flutter web build** (`deploy/web/`, identical to the mobile app) at `/`, and reverse-proxies
   `/ws /health /ready /stats` to the backend. Access logging is on (`docker logs ai-guide-caddy`).
@@ -72,7 +73,14 @@ flutter analyze
 flutter test                  # widget smoke test
 flutter run -d chrome         # quickest loop (web; simulated walk works without GPS)
 flutter build apk --debug     # Android
+flutter build ipa             # iOS — macOS + Xcode ONLY (not buildable on Windows); see mobile/README.md
 ```
+
+**Background-while-locked** (walk with screen off / earbud): a `flutter_foreground_task` LOCATION
+service keeps GPS+WS+TTS alive and shows a shade card with a Pause button. The plugin's
+`ForegroundService` is declared in `mobile/android/.../AndroidManifest.xml` (type `location`);
+iOS needs the `UIBackgroundModes` + `AppDelegate.swift` setup already in the repo. Don't remove
+geolocator's plain `AndroidSettings` (no `foregroundNotificationConfig` — the FG service owns the card).
 
 For the Android emulator after installing the APK: `adb -s emulator-5554 reverse tcp:8000 tcp:8000`
 (so `ws://localhost:8000/ws` reaches the host) and grant `RECORD_AUDIO`. See `mobile/README.md`
