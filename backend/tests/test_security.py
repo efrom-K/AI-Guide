@@ -66,6 +66,35 @@ def test_ws_rejects_without_token_and_accepts_with_it():
         settings.ws_token = ""
 
 
+# --- receive-loop robustness (a bad frame must NOT drop the socket) --------- #
+def test_ws_survives_malformed_json_and_invalid_message():
+    client = _app()
+    with client.websocket_connect("/ws") as ws:
+        # non-JSON text -> error frame, socket stays open
+        ws.send_text("this is not json{")
+        assert ws.receive_json() == {"type": "error", "message": "invalid json"}
+        # a JSON value that isn't an object -> error frame
+        ws.send_text("[1, 2, 3]")
+        assert ws.receive_json() == {"type": "error", "message": "invalid message"}
+        # a malformed typed message (lat not a number) -> error, not a disconnect
+        ws.send_json({"type": "position", "lat": "abc", "lon": 1})
+        assert ws.receive_json()["type"] == "error"
+        # the socket is STILL usable: a valid position now drives the tour
+        ws.send_json({"type": "position", "lat": 55.7525, "lon": 37.6231})
+        assert ws.receive_json()["type"] in ("state", "narration")
+
+
+def test_ws_caps_oversized_frame_before_parsing():
+    settings.max_ws_frame_chars = 10
+    try:
+        client = _app()
+        with client.websocket_connect("/ws") as ws:
+            ws.send_text('{"type":"ping"}')  # 15 chars > 10 -> rejected pre-parse
+            assert ws.receive_json() == {"type": "error", "message": "frame too large"}
+    finally:
+        settings.max_ws_frame_chars = 8_000_000 + 65_536
+
+
 # --- input-size limits ------------------------------------------------------ #
 def test_too_big_helper():
     settings.max_utterance_chars = 10

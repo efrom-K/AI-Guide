@@ -16,6 +16,15 @@ mobile/.flutter-plugins-dependencies
 mobile/.packages
 mobile/pubspec.lock
 
+# Build artifacts & signing material — must never be committed
+*.apk
+*.aab
+*.ipa
+*.keystore
+*.jks
+*.p12
+mobile/android/key.properties
+
 # OS / editor
 .DS_Store
 Thumbs.db

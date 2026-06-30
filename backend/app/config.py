@@ -151,6 +151,10 @@ class Settings(BaseSettings):
     usd_hard_cap: float = 0.0
     max_utterance_chars: int = 2000  # reject longer text/voice questions
     max_audio_b64_chars: int = 8_000_000  # ~6 MB decoded clip ceiling (anti-DoS)
+    # Hard ceiling on a single inbound WS frame (chars), checked BEFORE JSON parsing so
+    # a giant frame can't blow up memory pre-validation. Must exceed the largest legit
+    # frame (a base64 audio clip + JSON envelope), so default = audio cap + 64 KB slack.
+    max_ws_frame_chars: int = 8_000_000 + 65_536
     stats_token: str = ""  # admin token for /stats; "" => endpoint disabled
 
     # Server

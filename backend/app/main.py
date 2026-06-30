@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import json
 import logging
 import re
 import uuid
@@ -18,6 +19,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import ValidationError
 
 from app.config import settings
 from app.services.agent.factory import build_orchestrator
@@ -45,7 +47,9 @@ _active_sessions: set[str] = set()
 _counters = {"step_errors": 0, "question_errors": 0}
 _READY_FAIL_THRESHOLD = 3  # consecutive LLM failures => /ready goes unhealthy
 _PING_INTERVAL_S = 20  # WS keepalive cadence: keeps mobile NAT/proxy mappings alive
-_SID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")  # accepted client session-id shape
+# Accepted client session-id shape. Min 16 chars so a too-short id can't be brute-forced
+# to resume someone else's tour (the client mints 32-char cryptographic ids).
+_SID_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 
 _WEB_INDEX = Path(__file__).resolve().parent.parent / "web" / "index.html"
 _orchestrator: Orchestrator | None = None
@@ -86,6 +90,20 @@ async def _warm_stt() -> None:
             pass
 
     asyncio.create_task(_load())
+
+
+@app.on_event("startup")
+async def _warn_unbounded_spend() -> None:
+    """The /ws endpoint is public. If a real (paid) LLM backend is wired but no hard
+    spend ceiling is set, an abuser could drive unbounded cost — warn loudly at boot so
+    a prod deploy can't silently run without USD_HARD_CAP (also set a cap on the
+    provider dashboard; the code cap is only a backstop)."""
+    if settings.agent_backend != "heuristic" and settings.usd_hard_cap <= 0:
+        _log.warning(
+            "SECURITY: public /ws on a paid backend (%s) with USD_HARD_CAP=0 — no spend "
+            "ceiling. Set USD_HARD_CAP in .env and a monthly cap on the provider dashboard.",
+            settings.agent_backend,
+        )
 
 
 @app.get("/health")
@@ -394,53 +412,33 @@ async def ws(websocket: WebSocket) -> None:
         producer = asyncio.ensure_future(rt.run_producer())
         heartbeat = asyncio.ensure_future(rt.run_heartbeat())
         while True:
-            msg = await websocket.receive_json()
+            # Read text (not receive_json) so we can cap the frame BEFORE parsing — a
+            # giant frame can't blow up memory. A malformed/oversized/invalid frame is
+            # answered with an `error` and the loop continues; only a real disconnect
+            # (WebSocketDisconnect) ends it. Previously an invalid `position` raised an
+            # unhandled ValidationError that tore the socket down.
+            raw = await websocket.receive_text()
+            if len(raw) > settings.max_ws_frame_chars:
+                await rt.send_json({"type": "error", "message": "frame too large"})
+                continue
+            try:
+                msg = json.loads(raw)
+            except (ValueError, TypeError):
+                await rt.send_json({"type": "error", "message": "invalid json"})
+                continue
+            if not isinstance(msg, dict):
+                await rt.send_json({"type": "error", "message": "invalid message"})
+                continue
             kind = msg.get("type")
             if kind in ("ping", "pong"):
                 continue  # keepalive — nothing to do
             if _too_big(msg, kind):
                 await rt.send_json({"type": "error", "message": "message too large"})
                 continue
-            if kind == "position":
-                p = WSPositionUpdate.model_validate(msg)
-                rt.live_position = GeoPoint(lat=p.lat, lon=p.lon)
-                rt.live_heading = Heading(
-                    direction_deg=p.direction_deg, gaze_confidence=p.gaze_confidence
-                )
-                rt.live_pace = p.pace
-                rt.wake.set()
-            elif kind == "played":
-                rt.played.set()
-            elif kind == "listen":
-                # mic opened/closed on the client: pause the tour while the user speaks
-                if bool(msg.get("on")):
-                    await rt.pause_for_listen()
-                else:
-                    rt.resume_after_listen()
-            elif kind in ("utterance", "audio"):
-                await rt.handle_question(msg, kind)
-            elif kind == "language":
-                lang = WSSetLanguage.model_validate(msg)
-                state = await orch.store.load(rt.session_id)
-                state.language = normalize(lang.language)
-                # The cached area facts were fetched in the OLD language; drop them so
-                # the area monologue refetches (and re-narrates) in the new one. Place
-                # facts are cache-keyed by language, so they refresh on their own.
-                state.area_facts = None
-                await orch.store.save(state)
-                await rt.send_json({"type": "language", "language": state.language})
-            elif kind == "theme":
-                t = WSSetTheme.model_validate(msg)
-                await orch.set_theme(rt.session_id, t.theme)
-                rt.wake.set()
-            elif kind == "control":
-                c = WSControl.model_validate(msg)
-                state = await orch.store.load(rt.session_id)
-                state.control_patch = merge_patch(state.control_patch, c.patch)
-                await orch.store.save(state)
-                await rt.send_json({"type": "state", "state": state.state})
-            else:
-                await rt.send_json({"type": "error", "message": f"unknown type: {kind}"})
+            try:
+                await _dispatch(rt, orch, msg, kind)
+            except ValidationError:
+                await rt.send_json({"type": "error", "message": "invalid message"})
     except WebSocketDisconnect:
         pass
     finally:
@@ -465,3 +463,49 @@ async def ws(websocket: WebSocket) -> None:
         # The session is intentionally NOT deleted on disconnect: it is kept so a
         # reconnect (WiFi/cell drop) resumes the same tour. The store TTL-evicts idle
         # sessions (session_ttl_s) and LRU-caps the total, so this cannot leak.
+
+
+async def _dispatch(rt: _SessionRuntime, orch: Orchestrator, msg: dict, kind: str | None) -> None:
+    """Handle one inbound frame. Raises pydantic.ValidationError on a malformed typed
+    message (position/language/theme/control), which the caller turns into an `error`
+    frame without dropping the connection."""
+    if kind == "position":
+        p = WSPositionUpdate.model_validate(msg)
+        rt.live_position = GeoPoint(lat=p.lat, lon=p.lon)
+        rt.live_heading = Heading(
+            direction_deg=p.direction_deg, gaze_confidence=p.gaze_confidence
+        )
+        rt.live_pace = p.pace
+        rt.wake.set()
+    elif kind == "played":
+        rt.played.set()
+    elif kind == "listen":
+        # mic opened/closed on the client: pause the tour while the user speaks
+        if bool(msg.get("on")):
+            await rt.pause_for_listen()
+        else:
+            rt.resume_after_listen()
+    elif kind in ("utterance", "audio"):
+        await rt.handle_question(msg, kind)
+    elif kind == "language":
+        lang = WSSetLanguage.model_validate(msg)
+        state = await orch.store.load(rt.session_id)
+        state.language = normalize(lang.language)
+        # The cached area facts were fetched in the OLD language; drop them so the area
+        # monologue refetches (and re-narrates) in the new one. Place facts are
+        # cache-keyed by language, so they refresh on their own.
+        state.area_facts = None
+        await orch.store.save(state)
+        await rt.send_json({"type": "language", "language": state.language})
+    elif kind == "theme":
+        t = WSSetTheme.model_validate(msg)
+        await orch.set_theme(rt.session_id, t.theme)
+        rt.wake.set()
+    elif kind == "control":
+        c = WSControl.model_validate(msg)
+        state = await orch.store.load(rt.session_id)
+        state.control_patch = merge_patch(state.control_patch, c.patch)
+        await orch.store.save(state)
+        await rt.send_json({"type": "state", "state": state.state})
+    else:
+        await rt.send_json({"type": "error", "message": f"unknown type: {kind}"})

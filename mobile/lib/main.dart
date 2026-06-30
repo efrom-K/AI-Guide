@@ -65,9 +65,11 @@ String normLang(String code) => kLangs.containsKey(code) ? code : 'en';
 // dropped link (WiFi/cell) resumes the SAME backend session — preserving the
 // seen-list / history so the tour continues instead of repeating from scratch.
 String _genSessionId() {
-  final r = Random();
+  // Random.secure() (CSPRNG), 32 chars: the sid resumes a session, so a guessable one
+  // would let someone else resume your tour (GPS track + history). 36^32 ≈ 165 bits.
+  final r = Random.secure();
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  return List.generate(24, (_) => chars[r.nextInt(chars.length)]).join();
+  return List.generate(32, (_) => chars[r.nextInt(chars.length)]).join();
 }
 
 // Default backend URL — baked at build time so a test build points at the host
@@ -433,6 +435,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   int _retries = 0;
   Timer? _heartbeat; // app-level WS keepalive: ping the server so a NAT/proxy can't
   // reap the idle socket during a narration lull (the reconnect-storm fix).
+  Timer? _watchdog; // liveness watchdog: force-reconnect if the socket goes silent
+  DateTime _lastRxAt = DateTime.now(); // last inbound frame (any type) — resets the watchdog
+  Map<String, dynamic>? _lastPositionMsg; // last position sent — replayed on reconnect
   final String _sid = _genSessionId(); // stable id for resume-on-reconnect
 
   bool get _active => _walkTimer != null || _gpsSub != null;
@@ -685,7 +690,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     // Tear down any previous (possibly half-open) socket first so we never run two
     // overlapping connections — the churn seen in the prod logs on a flaky link.
     _heartbeat?.cancel();
+    _watchdog?.cancel();
     _ch?.sink.close();
+    _lastRxAt = DateTime.now();
     // Backend URL is baked in at build time (--dart-define WS_URL); not user-facing.
     var url = kDefaultWsUrl;
     final params = <String>['sid=$_sid']; // resume the same session on reconnect
@@ -696,6 +703,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     ch.stream.listen(
       (data) {
         _retries = 0; // a live message proves the link is healthy
+        _lastRxAt = DateTime.now(); // any inbound frame (incl. server ping) = alive
         final m = jsonDecode(data as String) as Map<String, dynamic>;
         switch (m['type']) {
           case 'state':
@@ -745,20 +753,38 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     // same session, so this is idempotent and the tour continues where it left off.
     _send({'type': 'language', 'language': _lang});
     if (_theme.isNotEmpty) _send({'type': 'theme', 'theme': _theme});
+    // Replay the last position so the tour resumes immediately on reconnect instead of
+    // sitting idle until the next GPS fix. Only a real fix (never the startup default).
+    if (_lastPositionMsg != null) _send(_lastPositionMsg!);
     // Keepalive: ping while connected so an idle socket isn't reaped mid-lull.
     _heartbeat = Timer.periodic(const Duration(seconds: 15), (_) {
       if (_connected) _send({'type': 'ping'});
+    });
+    // Liveness watchdog: a mobile socket can go half-open (no FIN — metro/elevator/cell
+    // handover) so onDone/onError never fire and the guide silently freezes. The server
+    // pings every ~20s and narrates, so >40s of total inbound silence means the link is
+    // dead — force-close it to trigger the reconnect path.
+    _watchdog = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (_wantConnected &&
+          _connected &&
+          DateTime.now().difference(_lastRxAt) > const Duration(seconds: 40)) {
+        _ch?.sink.close(); // -> onDone -> _onDisconnected -> reconnect
+      }
     });
   }
 
   // Socket dropped: reflect it, and auto-reconnect if the user still wants to be on.
   void _onDisconnected() {
     _heartbeat?.cancel();
+    _watchdog?.cancel();
     setState(() => _connected = false);
     if (!_wantConnected) return;
-    final delay = Duration(seconds: (1 << _retries).clamp(1, 16)); // 1,2,4,8,16s
+    final base = (1 << _retries).clamp(1, 16); // 1,2,4,8,16s exponential backoff
+    // Jitter (0–1000 ms) so a server restart doesn't trigger a synchronized reconnect
+    // storm from every client at once (thundering herd).
+    final delay = Duration(milliseconds: base * 1000 + Random().nextInt(1000));
     _retries++;
-    _toast(AppLocalizations.of(context)!.metaConnectionLost(delay.inSeconds));
+    _toast(AppLocalizations.of(context)!.metaConnectionLost(base));
     _reconnectTimer = Timer(delay, () {
       if (_wantConnected) _connect();
     });
@@ -768,6 +794,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _wantConnected = false;
     _reconnectTimer?.cancel();
     _heartbeat?.cancel();
+    _watchdog?.cancel();
     _stopWalk();
     _hush();
     _ch?.sink.close();
@@ -851,14 +878,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   // compass gives a trustworthy facing.
   void _sendPosition(double lat, double lon, double dir, String pace,
       {String gaze = 'low'}) {
-    _send({
+    final msg = {
       'type': 'position',
       'lat': lat,
       'lon': lon,
       'direction_deg': dir,
       'gaze_confidence': gaze,
       'pace': pace,
-    });
+    };
+    _lastPositionMsg = msg; // replayed on reconnect so the tour resumes at once
+    _send(msg);
     setState(() {
       _here = LatLng(lat, lon);
       _heading = dir;
@@ -1052,6 +1081,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _compass.dispose();
     _reconnectTimer?.cancel();
     _heartbeat?.cancel();
+    _watchdog?.cancel();
     _audioSub?.cancel();
     _tts.stop();
     _rec.dispose();
