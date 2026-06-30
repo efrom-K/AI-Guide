@@ -9,6 +9,12 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
+  String get bgNotifTitle => 'AI Audio Guide';
+
+  @override
+  String get bgNotifText => '正在为您讲述周围的地点';
+
+  @override
   String get connect => '连接';
 
   @override

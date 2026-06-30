@@ -9,6 +9,12 @@ class AppLocalizationsRu extends AppLocalizations {
   AppLocalizationsRu([String locale = 'ru']) : super(locale);
 
   @override
+  String get bgNotifTitle => 'AI Audio Guide';
+
+  @override
+  String get bgNotifText => 'Рассказываю о местах вокруг вас';
+
+  @override
   String get connect => 'Подключиться';
 
   @override

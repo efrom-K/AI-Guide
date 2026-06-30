@@ -12,7 +12,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -498,6 +498,21 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     await _tts.setSpeechRate(kIsWeb ? 1.0 : 0.5);
     await _tts.setPitch(1.0);
     await _tts.awaitSpeakCompletion(true);
+    // iOS: a playback audio session lets narration keep playing with the screen
+    // locked (paired with the `audio` UIBackgroundMode) and routes to a Bluetooth
+    // earbud while ducking any music the user has on.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      await _tts.setIosAudioCategory(
+        IosTextToSpeechAudioCategory.playback,
+        [
+          IosTextToSpeechAudioCategoryOptions.mixWithOthers,
+          IosTextToSpeechAudioCategoryOptions.duckOthers,
+          IosTextToSpeechAudioCategoryOptions.allowBluetoothA2DP,
+          IosTextToSpeechAudioCategoryOptions.allowAirPlay,
+        ],
+        IosTextToSpeechAudioMode.spokenAudio,
+      );
+    }
     // The queue is driven by awaiting speak() in _speakNext (reliable across
     // platforms). On web the browser's SpeechSynthesis 'end' event is sometimes
     // dropped mid-utterance (a known Chrome bug, easy to hit when an overlay opens),
@@ -925,7 +940,35 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     // Start the compass so a held-up phone yields a real facing (left/right).
     _compass.start();
     _compassSub ??= _compass.readings.listen((r) => _compassReading = r);
-    const settings = LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5);
+    // Background operation: keep the tour going with the screen locked / phone in a
+    // pocket. On Android a foreground LOCATION service (with an ongoing notification)
+    // holds the process alive so GPS, the WebSocket and TTS keep running; on iOS we
+    // enable background location updates. Either way the existing main-isolate logic
+    // (heartbeat, watchdog, speech queue) keeps ticking without a second isolate.
+    final LocationSettings settings;
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      settings = AndroidSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 5,
+        foregroundNotificationConfig: ForegroundNotificationConfig(
+          notificationTitle: l.bgNotifTitle,
+          notificationText: l.bgNotifText,
+          enableWakeLock: true,
+          setOngoing: true,
+        ),
+      );
+    } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      settings = AppleSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 5,
+        allowBackgroundLocationUpdates: true,
+        showBackgroundLocationIndicator: true,
+        pauseLocationUpdatesAutomatically: false,
+        activityType: ActivityType.fitness,
+      );
+    } else {
+      settings = const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5);
+    }
     _gpsSub = Geolocator.getPositionStream(locationSettings: settings).listen(
       (pos) {
         // Track recent GPS courses (only while actually moving) to tell a steady

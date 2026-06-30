@@ -110,6 +110,18 @@ abstract class AppLocalizations {
     Locale('zh')
   ];
 
+  /// No description provided for @bgNotifTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'AI Audio Guide'**
+  String get bgNotifTitle;
+
+  /// No description provided for @bgNotifText.
+  ///
+  /// In en, this message translates to:
+  /// **'Telling you about places around you'**
+  String get bgNotifText;
+
   /// No description provided for @connect.
   ///
   /// In en, this message translates to:

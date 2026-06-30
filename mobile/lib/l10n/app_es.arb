@@ -1,5 +1,7 @@
 {
   "@@locale": "es",
+  "bgNotifTitle": "AI Audio Guide",
+  "bgNotifText": "Te cuento sobre los lugares a tu alrededor",
   "connect": "Conectar",
   "disconnect": "Desconectar",
   "startWalk": "Paseo",

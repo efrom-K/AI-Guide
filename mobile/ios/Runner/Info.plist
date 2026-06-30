@@ -71,8 +71,18 @@
 	     localize these system dialogs too, add <lang>.lproj/InfoPlist.strings files. -->
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Shows your location on the map and tells you about the places around you.</string>
+	<!-- "Always" lets the guide keep narrating with the screen off / phone in a pocket. -->
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Keeps telling you about the places around you while the app is in your pocket with the screen off.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Lets you ask the guide a question by voice.</string>
+	<!-- Background operation: keep the GPS stream and on-device narration alive while
+	     the screen is locked, so you can walk with an earbud and the phone in a pocket. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>audio</string>
+	</array>
 	<!-- Allow ws:// (cleartext) for LAN/dev testing. For an App Store build with a
 	     wss:// host you can remove this and rely on default ATS (TLS only). -->
 	<key>NSAppTransportSecurity</key>

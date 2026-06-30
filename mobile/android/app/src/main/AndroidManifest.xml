@@ -6,6 +6,17 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Microphone for voice barge-in (ask the guide by voice) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- Background operation: keep narrating with the screen locked / phone in a
+         pocket. geolocator runs a foreground LOCATION service that holds the process
+         alive, so GPS, the WebSocket and on-device TTS keep running in the background.
+         ACCESS_BACKGROUND_LOCATION is optional (the foreground-service-while-in-use
+         model already works); granting "Allow all the time" just makes long walks more
+         resilient on aggressive-battery OEMs. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <application
         android:label="AI Audio Guide"
         android:name="${applicationName}"
