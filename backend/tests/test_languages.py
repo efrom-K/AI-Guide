@@ -54,9 +54,20 @@ def test_display_name_follows_session_language():
     assert lang.display_name(tags, raw, "de") == "Roter Platz"
     # ...else the English exonym...
     assert lang.display_name(tags, raw, "fr") == "Red Square"
-    # ...and the raw local name only as a last resort (no en, no name:<lang>).
-    assert lang.display_name({"name": raw}, raw, "en") == raw
-    # A native-language session keeps the original.
+    # ...and a Cyrillic raw name is romanized as a last resort (no en, no name:<lang>).
+    assert lang.display_name({"name": raw}, raw, "en") == "Krasnaya ploshchad"
+    # int_name is preferred over a mechanical transliteration.
+    assert lang.display_name({"name": raw, "int_name": "Krasnaya Ploshchad"}, raw, "en") \
+        == "Krasnaya Ploshchad"
+    # A native-language session keeps the original Cyrillic.
     assert lang.display_name(tags, raw, "ru") == "Красная площадь"
     # Unknown/empty code falls back to English (normalize -> en).
     assert lang.display_name(tags, raw, None) == "Red Square"
+
+
+def test_transliterate_romanizes_cyrillic():
+    assert lang.transliterate("Звонница") == "Zvonnitsa"
+    assert lang.transliterate("Боровицкие ворота") == "Borovitskie vorota"
+    # Latin / digits / punctuation pass through untouched.
+    assert lang.transliterate("Cafe 21") == "Cafe 21"
+    assert lang.transliterate("Tverskaya") == "Tverskaya"

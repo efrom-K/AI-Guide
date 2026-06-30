@@ -37,6 +37,41 @@ def prompt_language(code: str | None) -> str:
     return PROMPT_NAME[normalize(code)]
 
 
+# Practical Russian Cyrillic -> Latin romanization. Used as the last-resort title for
+# a non-Russian session when OSM has no exonym, so a minor object like "Звонница" is
+# shown as "Zvonnitsa" (how the narrator already pronounces it) instead of raw Cyrillic.
+_CYR_LAT: dict[str, str] = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    # a few non-Russian Cyrillic letters so Ukrainian/Serbian names degrade gracefully
+    "і": "i", "ї": "yi", "є": "ye", "ґ": "g", "ђ": "dj", "ј": "j", "љ": "lj",
+    "њ": "nj", "ћ": "c", "џ": "dz", "ў": "u",
+}
+
+
+def _has_cyrillic(s: str) -> bool:
+    return any("Ѐ" <= ch <= "ӿ" for ch in s)
+
+
+def transliterate(s: str) -> str:
+    """Romanize Cyrillic to Latin; non-Cyrillic chars pass through unchanged. Source
+    case is preserved (an uppercase letter capitalizes its multi-char romanization)."""
+    out: list[str] = []
+    for ch in s:
+        low = ch.lower()
+        rep = _CYR_LAT.get(low)
+        if rep is None:
+            out.append(ch)  # Latin, digits, spaces, punctuation
+        elif ch == low or not rep:
+            out.append(rep)
+        else:
+            out.append(rep[0].upper() + rep[1:])  # uppercase source -> "Shch", "Ya"
+    return "".join(out)
+
+
 def display_name(tags: dict[str, str], fallback: str, code: str | None) -> str:
     """Localized display name for a POI / place.
 
@@ -48,19 +83,21 @@ def display_name(tags: dict[str, str], fallback: str, code: str | None) -> str:
     2. Otherwise the raw local ``name`` for a **Russian** session: Russia is the
        primary deployment region, where the raw tag is already Russian, so a RU
        walker must keep the authentic Cyrillic name (never the English exonym).
-    3. For any other (international) session with no name in its language, the English
-       exonym ``name:en`` is far more useful than a raw foreign-script title; the raw
-       ``name`` is only the last resort.
+    3. For any other (international) session: the English exonym ``name:en``, then the
+       official ``int_name``; failing both, a Cyrillic raw name is **romanized** to
+       Latin so the title is readable and matches the spoken narration (the narrator
+       transliterates proper names anyway). A name already in Latin is kept as-is.
 
-    The ``name:<lang>`` tags must be kept on the Place (see ``KEEP_TAGS`` in
-    geo/categories.py). Compare geocoder ``_name``, which localizes street/city names."""
+    The ``name:<lang>`` / ``int_name`` tags must be kept on the Place (see ``KEEP_TAGS``
+    in geo/categories.py). Compare geocoder ``_name``, which localizes street/city names."""
     lang = normalize(code)
     exact = tags.get(f"name:{lang}")
     if exact:
         return exact
     if lang == "ru":
         return fallback  # raw tag is the authentic Russian name in the home region
-    return tags.get("name:en") or fallback
+    chosen = tags.get("name:en") or tags.get("int_name") or fallback
+    return transliterate(chosen) if _has_cyrillic(chosen) else chosen
 
 
 # --- Spoken-verbatim strings ------------------------------------------------- #
