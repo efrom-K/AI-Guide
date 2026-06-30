@@ -14,6 +14,7 @@ from app.services.enrichment.enricher import (
     Enricher,
     EnrichmentCache,
     _is_no_data,
+    _lang_directive,
     attach_facts,
     prefetch,
 )
@@ -89,18 +90,25 @@ class TextPipeline:
         self.planner = planner
         self._warm_tasks: set[asyncio.Task] = set()  # hold refs to background warms
 
-    def warm_ahead(self, candidates: list[Candidate], *, address: Address | None = None):
+    def warm_ahead(
+        self,
+        candidates: list[Candidate],
+        *,
+        address: Address | None = None,
+        language: str | None = None,
+    ):
         """Non-blocking: warm the fact cache for objects the user is walking TOWARD
         (in the course cone, nearest first), so facts are ready before arrival. A
         no-op on the mock/inline path (`enrich_top_k is None`). Returns the scheduled
         task (or None) so callers/tests can await it; the orchestrator ignores it."""
         if self.enrich_top_k is None or not candidates:
             return None
+        lang = language or self.language
         # Cone-first, then nearest: facts for what you're walking toward are warmed
         # first, but nearby objects off the cone still get facts too — so the guide
         # has something ready whichever object you end up passing (background
         # inventory fact-collection).
-        pending = [c for c in candidates if c.place.id not in self.cache]
+        pending = [c for c in candidates if not self.cache.has(c.place.id, lang)]
         pending.sort(key=lambda c: (not c.in_gaze_cone, c.distance_m))
         ahead = pending[: settings.enrich_lookahead_k]
         if not ahead:
@@ -115,6 +123,7 @@ class TextPipeline:
                 top_k=settings.enrich_lookahead_k,
                 timeout_s=self.enrich_timeout_s,
                 context=ctx,
+                language=lang,
             )
         )
         self._warm_tasks.add(task)
@@ -155,8 +164,9 @@ class TextPipeline:
             top_k=self.enrich_top_k,
             timeout_s=self.enrich_timeout_s,
             context=ctx,
+            language=lang,
         )
-        enriched = attach_facts(candidates, self.cache)
+        enriched = attach_facts(candidates, self.cache, lang)
 
         seen_set = set(seen)
         skip = set(preferences.skip_categories) if preferences else set()
@@ -217,7 +227,7 @@ class TextPipeline:
         # (idempotent when it didn't). Facts cache is keyed by id, so this is free.
         place = place.model_copy(update={"name": display_name(place.tags, place.name, lang)})
         addr = address or Address()
-        facts = self.cache.get(place.id)
+        facts = self.cache.get(place.id, lang)
         if facts is None:
             ctx = ", ".join(p for p in (addr.city, addr.country) if p) or None
             await prefetch(
@@ -228,8 +238,9 @@ class TextPipeline:
                 top_k=1,
                 timeout_s=self.enrich_timeout_s,
                 context=ctx,
+                language=lang,
             )
-            facts = self.cache.get(place.id)
+            facts = self.cache.get(place.id, lang)
         raw = await self.narrator.narrate(
             NarratorInput(
                 place=place,
@@ -298,10 +309,17 @@ class TextPipeline:
         )
 
     async def enrich_area(
-        self, address: Address, point: GeoPoint | None, *, timeout_s: float | None = None
+        self,
+        address: Address,
+        point: GeoPoint | None,
+        *,
+        timeout_s: float | None = None,
+        language: str | None = None,
     ) -> str | None:
         """Fetch verified, atypical facts about the current district/street/city via
-        web search. Slow-changing -> the orchestrator caches it once per area."""
+        web search. Slow-changing -> the orchestrator caches it once per area. The
+        facts are written in the session language so the area monologue doesn't leak
+        the sources' (often Russian) language verbatim."""
         if self.area_llm is None:
             return None
         where = " ".join(p for p in (address.district, address.street, address.city) if p)
@@ -309,9 +327,10 @@ class TextPipeline:
             return None
         coords = f"coordinates {point.lat:.4f}, {point.lon:.4f}" if point else ""
         query = f"{where} {coords} neighbourhood history what it's known for unusual facts".strip()
+        system = _AREA_ENRICH_SYSTEM + _lang_directive(language or self.language)
         try:
             coro = self.area_llm.web_facts(
-                _AREA_ENRICH_SYSTEM, query, max_results=3, max_tokens=400
+                system, query, max_results=3, max_tokens=400
             )
             text = (await asyncio.wait_for(coro, timeout=timeout_s) if timeout_s else await coro)
         except (Exception, asyncio.TimeoutError):

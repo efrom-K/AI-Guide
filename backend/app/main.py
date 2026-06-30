@@ -418,6 +418,10 @@ async def ws(websocket: WebSocket) -> None:
                 lang = WSSetLanguage.model_validate(msg)
                 state = await orch.store.load(rt.session_id)
                 state.language = normalize(lang.language)
+                # The cached area facts were fetched in the OLD language; drop them so
+                # the area monologue refetches (and re-narrates) in the new one. Place
+                # facts are cache-keyed by language, so they refresh on their own.
+                state.area_facts = None
                 await orch.store.save(state)
                 await rt.send_json({"type": "language", "language": state.language})
             elif kind == "theme":

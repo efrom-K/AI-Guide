@@ -15,11 +15,16 @@ from typing import Protocol
 
 import httpx
 
+from app.services.agent.languages import normalize, prompt_language
 from app.shared.schemas import Candidate, Place
 
 _log = logging.getLogger("aiguide.enrich")
 
 _CACHE_CAP = 5000  # per-cache entry ceiling so facts dicts can't grow unbounded
+
+# Default session language across the offline stack (mirrors the "ru" defaults on
+# SessionState / the pipeline / ScorerInput), so cache get/put stay consistent.
+_DEFAULT_LANG = "ru"
 
 
 def _bounded_set(cache: dict, key, value, cap: int = _CACHE_CAP) -> None:
@@ -29,22 +34,42 @@ def _bounded_set(cache: dict, key, value, cap: int = _CACHE_CAP) -> None:
     cache[key] = value
 
 
+def _lang_directive(language: str) -> str:
+    """Instruction appended to an enrichment system prompt so the model writes the
+    facts in the SESSION language, not the language of the (often local) sources —
+    e.g. an English session about a Moscow district must not get Russian facts that
+    then leak into the narration verbatim."""
+    return (
+        f" Write the facts in {prompt_language(language)}, translating from the "
+        "sources if needed; output only that language."
+    )
+
+
 class Enricher(Protocol):
-    async def facts_for(self, place: Place, context: str | None = None) -> str | None: ...
+    async def facts_for(
+        self, place: Place, context: str | None = None, language: str = _DEFAULT_LANG
+    ) -> str | None: ...
 
 
 class EnrichmentCache:
+    """Facts cache keyed by (place_id, language): the SAME place yields different
+    facts per session language, so a Russian session's facts must not be served to
+    an English one. ``place_id in cache`` still answers "any language cached?"."""
+
     def __init__(self) -> None:
-        self._cache: dict[str, str] = {}
+        self._cache: dict[tuple[str, str], str] = {}
 
-    def get(self, place_id: str) -> str | None:
-        return self._cache.get(place_id)
+    def get(self, place_id: str, language: str = _DEFAULT_LANG) -> str | None:
+        return self._cache.get((place_id, normalize(language)))
 
-    def put(self, place_id: str, facts: str) -> None:
-        _bounded_set(self._cache, place_id, facts)
+    def put(self, place_id: str, facts: str, language: str = _DEFAULT_LANG) -> None:
+        _bounded_set(self._cache, (place_id, normalize(language)), facts)
+
+    def has(self, place_id: str, language: str = _DEFAULT_LANG) -> bool:
+        return (place_id, normalize(language)) in self._cache
 
     def __contains__(self, place_id: str) -> bool:
-        return place_id in self._cache
+        return any(pid == place_id for pid, _ in self._cache)
 
 
 class MockEnricher:
@@ -53,7 +78,9 @@ class MockEnricher:
     def __init__(self, facts: dict[str, str]) -> None:
         self._facts = facts
 
-    async def facts_for(self, place: Place, context: str | None = None) -> str | None:
+    async def facts_for(
+        self, place: Place, context: str | None = None, language: str = _DEFAULT_LANG
+    ) -> str | None:
         return self._facts.get(place.id)
 
     @classmethod
@@ -132,13 +159,19 @@ class WebSearchEnricher:
         except OSError:
             pass
 
-    async def facts_for(self, place: Place, context: str | None = None) -> str | None:
-        if place.id in self._cache:
-            return self._cache[place.id]
+    async def facts_for(
+        self, place: Place, context: str | None = None, language: str = _DEFAULT_LANG
+    ) -> str | None:
+        # Key by language too: the same place is searched once per session language so
+        # an English session never reuses a Russian session's Russian facts. String
+        # key ("lang:id") so the optional JSON disk cache stays serialisable.
+        key = f"{normalize(language)}:{place.id}"
+        if key in self._cache:
+            return self._cache[key]
         facts: str | None = None
         try:
             text = await self._llm.web_facts(
-                _ENRICH_SYSTEM,
+                _ENRICH_SYSTEM + _lang_directive(language),
                 self._query(place, context),
                 max_results=self._max_results,
                 max_tokens=self._max_tokens,
@@ -149,7 +182,7 @@ class WebSearchEnricher:
         except Exception as e:  # network/provider hiccup — degrade to no facts
             _log.warning("enrich failed for %s: %s", place.id, e)
             return None  # transient: don't cache, retry on a later tick
-        _bounded_set(self._cache, place.id, facts)
+        _bounded_set(self._cache, key, facts)
         self._persist()
         return facts
 
@@ -166,13 +199,27 @@ class WikiEnricher:
         self._prefer = prefer_langs
         self._cache: dict[str, str | None] = {}
 
-    async def facts_for(self, place: Place, context: str | None = None) -> str | None:
+    def _langs(self, language: str) -> tuple[str, ...]:
+        """Preferred Wikipedia languages for this session: the session language, then
+        English, then the configured defaults — deduped, order-preserving. So an EN
+        session reads the English article, not the Russian one the old default forced."""
+        out: list[str] = []
+        for code in (normalize(language), "en", *self._prefer):
+            if code not in out:
+                out.append(code)
+        return tuple(out)
+
+    async def facts_for(
+        self, place: Place, context: str | None = None, language: str = _DEFAULT_LANG
+    ) -> str | None:
         wp = place.tags.get("wikipedia")
         wd = place.tags.get("wikidata")
         if not wp and not wd:
             return None
-        if place.id in self._cache:
-            return self._cache[place.id]
+        key = f"{normalize(language)}:{place.id}"
+        if key in self._cache:
+            return self._cache[key]
+        prefer = self._langs(language)
         facts: str | None = None
         try:
             # Wikimedia requires a descriptive User-Agent (a bare one is 403'd).
@@ -184,17 +231,20 @@ class WikiEnricher:
                     "(https://github.com/ai-audio-guide; audioguide@example.org)"
                 },
             ) as client:
-                if wp:
+                # Wikidata FIRST when available: its sitelinks let us pick the article
+                # in the session language (the `wikipedia=` tag is pinned to one
+                # language — often `ru:` here — and would otherwise force that locale).
+                if wd:
+                    facts = await self._from_wikidata(client, wd, prefer)
+                if not facts and wp:
                     lang, _, title = wp.partition(":")
                     if not title:  # tag was just a title, no "lang:" prefix
-                        lang, title = self._prefer[0], wp
+                        lang, title = prefer[0], wp
                     facts = await self._summary(client, lang, title)
-                if not facts and wd:
-                    facts = await self._from_wikidata(client, wd)
         except Exception as e:  # transient network/parse — don't cache, retry later
             _log.warning("wiki enrich failed for %s: %s", place.id, e)
             return None
-        _bounded_set(self._cache, place.id, facts)
+        _bounded_set(self._cache, key, facts)
         return facts
 
     async def _summary(self, client: httpx.AsyncClient, lang: str, title: str) -> str | None:
@@ -205,12 +255,14 @@ class WikiEnricher:
         extract = (r.json().get("extract") or "").strip()
         return extract[: self._chars] if extract else None
 
-    async def _from_wikidata(self, client: httpx.AsyncClient, qid: str) -> str | None:
+    async def _from_wikidata(
+        self, client: httpx.AsyncClient, qid: str, prefer: tuple[str, ...]
+    ) -> str | None:
         r = await client.get(f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json")
         if r.status_code != 200:
             return None
         links = r.json().get("entities", {}).get(qid, {}).get("sitelinks", {})
-        for lang in self._prefer:
+        for lang in prefer:
             sl = links.get(f"{lang}wiki")
             if sl:
                 return await self._summary(client, lang, sl["title"])
@@ -226,14 +278,16 @@ class CompositeEnricher:
         self._web = web
         self._web_min_weight = web_min_weight
 
-    async def facts_for(self, place: Place, context: str | None = None) -> str | None:
-        facts = await self._wiki.facts_for(place, context)
+    async def facts_for(
+        self, place: Place, context: str | None = None, language: str = _DEFAULT_LANG
+    ) -> str | None:
+        facts = await self._wiki.facts_for(place, context, language)
         if facts:
             return facts
         from app.services.geo.categories import weight_for
 
         if weight_for(place.category) >= self._web_min_weight:
-            return await self._web.facts_for(place, context)
+            return await self._web.facts_for(place, context, language)
         return None
 
 
@@ -245,8 +299,9 @@ async def prefetch(
     top_k: int | None = None,
     timeout_s: float | None = None,
     context: str | None = None,
+    language: str = _DEFAULT_LANG,
 ) -> None:
-    """Populate the cache with facts for the uncached candidates.
+    """Populate the cache with facts (in ``language``) for the uncached candidates.
 
     Only the top ``top_k`` (ranking-ordered, best first) are fetched — concurrently
     and bounded by ``timeout_s`` so a slow/real provider can't stall the tick. Any
@@ -254,14 +309,14 @@ async def prefetch(
     With ``top_k=None`` and ``timeout_s=None`` every candidate is fetched (the cheap
     mock/fixture path used by tests).
     """
-    pending = [c for c in candidates if c.place.id not in cache]
+    pending = [c for c in candidates if not cache.has(c.place.id, language)]
     if top_k is not None:
         pending = pending[:top_k]
     if not pending:
         return
 
     async def _one(c: Candidate) -> tuple[str, str | None]:
-        return c.place.id, await enricher.facts_for(c.place, context)
+        return c.place.id, await enricher.facts_for(c.place, context, language)
 
     tasks = [asyncio.ensure_future(_one(c)) for c in pending]
     done, not_done = await asyncio.wait(tasks, timeout=timeout_s)
@@ -273,14 +328,16 @@ async def prefetch(
         except Exception:  # noqa: BLE001 — one bad fetch shouldn't sink the rest
             continue
         if facts:
-            cache.put(place_id, facts)
+            cache.put(place_id, facts, language)
 
 
-def attach_facts(candidates: list[Candidate], cache: EnrichmentCache) -> list[Candidate]:
+def attach_facts(
+    candidates: list[Candidate], cache: EnrichmentCache, language: str = _DEFAULT_LANG
+) -> list[Candidate]:
     """Return candidates with facts_available/facts_snippet filled from the cache."""
     out: list[Candidate] = []
     for c in candidates:
-        facts = cache.get(c.place.id)
+        facts = cache.get(c.place.id, language)
         out.append(
             c.model_copy(update={"facts_available": facts is not None, "facts_snippet": facts})
         )

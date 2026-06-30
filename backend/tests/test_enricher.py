@@ -44,6 +44,30 @@ def test_returns_and_caches_facts():
     assert llm.calls == 1  # second call served from cache
 
 
+def test_cache_is_language_keyed():
+    cache = EnrichmentCache()
+    cache.put("p", "русские факты", "ru")
+    cache.put("p", "english facts", "en")
+    assert cache.get("p", "ru") == "русские факты"
+    assert cache.get("p", "en") == "english facts"
+    assert cache.has("p", "ru") and cache.has("p", "en")
+    assert not cache.has("p", "fr")  # not cached in French yet
+    assert "p" in cache  # __contains__ answers "cached in any language?"
+    assert "q" not in cache
+
+
+def test_web_enricher_searches_once_per_language():
+    # A different language is a fresh search (so facts come back in that language);
+    # the same language hits the cache. The system prompt carries a language directive.
+    llm = FakeWebLLM(reply="* a fact")
+    enr = WebSearchEnricher(llm)
+    asyncio.run(enr.facts_for(_place("p"), language="en"))
+    asyncio.run(enr.facts_for(_place("p"), language="en"))  # cache hit
+    assert llm.calls == 1
+    asyncio.run(enr.facts_for(_place("p"), language="ru"))  # different lang -> re-search
+    assert llm.calls == 2
+
+
 def test_no_facts_marker_is_none_and_cached():
     llm = FakeWebLLM(reply="НЕТ")
     enr = WebSearchEnricher(llm)
@@ -93,7 +117,7 @@ class FakeEnricher:
         self._reply = reply
         self.calls = 0
 
-    async def facts_for(self, place, context=None):
+    async def facts_for(self, place, context=None, language="ru"):
         self.calls += 1
         return self._reply
 

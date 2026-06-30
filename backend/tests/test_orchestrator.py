@@ -224,7 +224,7 @@ def test_warm_ahead_caches_cone_first_then_nearby_nonblocking():
     from app.shared.schemas import Candidate, GazeConfidence
 
     class FakeEnricher:
-        async def facts_for(self, place, context=None):
+        async def facts_for(self, place, context=None, language="ru"):
             return f"facts:{place.id}"
 
     def cand(pid, dist, cone):

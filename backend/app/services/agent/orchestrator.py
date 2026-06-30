@@ -95,17 +95,18 @@ class OrchestratorOutput:
     lon: float | None = None
 
 
-def fingerprint(candidates: list[Candidate], cache=None) -> str:
+def fingerprint(candidates: list[Candidate], cache=None, language: str = "ru") -> str:
     """A stable signature of the bubble set used to gate the LLM. When a fact `cache`
-    is given it's FACTS-AWARE: each id is tagged with whether its facts are cached yet.
-    That keeps the gate stable for a genuinely factless object (no LLM re-call every
-    tick), but RE-OPENS it the instant warm_ahead caches facts for a passing object
-    whose facts were cold when it entered the bubble — so "walk up to a monument -> it
-    gets narrated" is reliable instead of being burned forever by the first cold miss."""
+    is given it's FACTS-AWARE: each id is tagged with whether its facts are cached yet
+    (in the session `language`). That keeps the gate stable for a genuinely factless
+    object (no LLM re-call every tick), but RE-OPENS it the instant warm_ahead caches
+    facts for a passing object whose facts were cold when it entered the bubble — so
+    "walk up to a monument -> it gets narrated" is reliable instead of being burned
+    forever by the first cold miss."""
     if cache is None:
         return ",".join(sorted(c.place.id for c in candidates))
     return ",".join(
-        f"{c.place.id}:{int(cache.get(c.place.id) is not None)}"
+        f"{c.place.id}:{int(cache.get(c.place.id, language) is not None)}"
         for c in sorted(candidates, key=lambda c: c.place.id)
     )
 
@@ -184,7 +185,7 @@ class Orchestrator:
         # Warm facts for the whole live window (non-blocking) — collects facts about
         # the surrounding objects in the background, so the story is ready the moment
         # the user reaches one.
-        self.pipeline.warm_ahead(result.candidates, address=st.address)
+        self.pipeline.warm_ahead(result.candidates, address=st.address, language=st.language)
 
         # Narrate an object ONLY when the user is passing close to it ("проходишь
         # мимо"): within the small narrate bubble, nearest first. Outside it the area
@@ -200,7 +201,7 @@ class Orchestrator:
         # `fingerprint`): it re-opens when warm_ahead caches facts for a passing object
         # whose facts were cold on arrival, so the object is reliably picked up instead
         # of being burned forever by the first cold-facts miss.
-        fp = fingerprint(near, self.pipeline.cache)
+        fp = fingerprint(near, self.pipeline.cache, st.language)
         gated = fp == st.last_candidate_fingerprint and not result.expanded
         st.last_candidate_fingerprint = fp
         if not near or gated:
@@ -392,7 +393,8 @@ class Orchestrator:
         # Fetch verified area facts once, up front (used to ground every beat).
         if settings.area_enrich and st.area_facts is None:
             facts = await self.pipeline.enrich_area(
-                st.address, st.position, timeout_s=settings.enrich_timeout_s
+                st.address, st.position, timeout_s=settings.enrich_timeout_s,
+                language=st.language,
             )
             st.area_facts = facts or ""  # cache "" so we don't refetch every beat
 
