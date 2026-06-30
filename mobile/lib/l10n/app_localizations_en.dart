@@ -15,6 +15,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get bgNotifText => 'Telling you about places around you';
 
   @override
+  String get bgNotifPaused => 'Tour paused';
+
+  @override
+  String get bgPause => 'Pause';
+
+  @override
+  String get bgResume => 'Resume';
+
+  @override
   String get connect => 'Connect';
 
   @override

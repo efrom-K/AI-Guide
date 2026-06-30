@@ -122,6 +122,24 @@ abstract class AppLocalizations {
   /// **'Telling you about places around you'**
   String get bgNotifText;
 
+  /// No description provided for @bgNotifPaused.
+  ///
+  /// In en, this message translates to:
+  /// **'Tour paused'**
+  String get bgNotifPaused;
+
+  /// No description provided for @bgPause.
+  ///
+  /// In en, this message translates to:
+  /// **'Pause'**
+  String get bgPause;
+
+  /// No description provided for @bgResume.
+  ///
+  /// In en, this message translates to:
+  /// **'Resume'**
+  String get bgResume;
+
   /// No description provided for @connect.
   ///
   /// In en, this message translates to:

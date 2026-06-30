@@ -15,6 +15,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get bgNotifText => '正在为您讲述周围的地点';
 
   @override
+  String get bgNotifPaused => '导览已暂停';
+
+  @override
+  String get bgPause => '暂停';
+
+  @override
+  String get bgResume => '继续';
+
+  @override
   String get connect => '连接';
 
   @override

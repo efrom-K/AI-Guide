@@ -15,6 +15,15 @@ class AppLocalizationsRu extends AppLocalizations {
   String get bgNotifText => 'Рассказываю о местах вокруг вас';
 
   @override
+  String get bgNotifPaused => 'Экскурсия на паузе';
+
+  @override
+  String get bgPause => 'Пауза';
+
+  @override
+  String get bgResume => 'Продолжить';
+
+  @override
   String get connect => 'Подключиться';
 
   @override

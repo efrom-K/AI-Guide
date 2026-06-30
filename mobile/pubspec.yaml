@@ -21,6 +21,7 @@ dependencies:
   latlong2: ^0.9.1          # LatLng type for flutter_map
   sensors_plus: ^6.0.1      # magnetometer+accelerometer -> device facing (gaze_confidence=high)
   shared_preferences: ^2.3.2 # persist the user's theme + language choice across launches
+  flutter_foreground_task: ^9.2.2
 
 dev_dependencies:
   flutter_test:

@@ -14,6 +14,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:geolocator/geolocator.dart';
@@ -38,11 +39,41 @@ ThemeMode _parseThemeMode(String? v) => switch (v) {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Set up the channel the foreground-service isolate uses to talk back to the UI
+  // isolate (notification button presses). Android/iOS only; a no-op-guard on web.
+  if (!kIsWeb) FlutterForegroundTask.initCommunicationPort();
   final prefs = await SharedPreferences.getInstance();
   runApp(GuideApp(
     initialThemeMode: _parseThemeMode(prefs.getString(_kPrefTheme)),
     initialLang: prefs.getString(_kPrefLang),
   ));
+}
+
+// Notification action id for the Pause/Resume button in the foreground-service card.
+const _kFgPauseAction = 'pause';
+
+// Entry point for the foreground service's background isolate. It holds no app
+// state — its only job is to forward notification interactions to the UI isolate
+// (where the WebSocket, TTS and tour state live). The service's mere existence is
+// what keeps the process alive with the screen locked.
+@pragma('vm:entry-point')
+void guideServiceCallback() {
+  FlutterForegroundTask.setTaskHandler(_GuideServiceHandler());
+}
+
+class _GuideServiceHandler extends TaskHandler {
+  @override
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
+  @override
+  void onRepeatEvent(DateTime timestamp) {}
+  @override
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
+  // Pause/Resume button -> ask the UI isolate to toggle the tour.
+  @override
+  void onNotificationButtonPressed(String id) => FlutterForegroundTask.sendDataToMain(id);
+  // Tapping the notification body reopens the map.
+  @override
+  void onNotificationPressed() => FlutterForegroundTask.launchApp();
 }
 
 // Supported guide languages: code -> (native label for the picker, TTS BCP-47 tag).
@@ -430,6 +461,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   bool _curIsReply = false;
 
   bool _speaking = false; // TTS currently talking
+  bool _paused = false; // tour paused from the notification's Pause button
+  bool _askedBatteryOpt = false; // only nudge battery-optimization once per launch
   bool _wantConnected = false; // user intends a live connection (drives auto-reconnect)
   Timer? _reconnectTimer;
   int _retries = 0;
@@ -446,6 +479,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _lang = normLang(widget.locale.languageCode);
+    // Notification button presses (Pause/Resume) arrive here from the service isolate.
+    if (!kIsWeb) FlutterForegroundTask.addTaskDataCallback(_onFgServiceData);
     _initTts();
     // Ask for mic + location up front and centre the map on the real position,
     // rather than sitting on the Moscow default until a walk starts.
@@ -538,11 +573,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       return;
     }
     _speakQueue.add(_Speech(text, isNarration));
-    if (!_speaking) _speakNext();
+    // Paused from the notification: keep it queued but stay silent and DON'T ack
+    // `played`, so the server's paced producer waits until we resume.
+    if (!_speaking && !_paused) _speakNext();
   }
 
   Future<void> _speakNext() async {
-    if (_speaking || _speakQueue.isEmpty) return;
+    if (_speaking || _paused || _speakQueue.isEmpty) return;
     final s = _speakQueue.removeAt(0);
     setState(() => _speaking = true); // claim synchronously to avoid overlap
     // Pace the server the moment a paragraph starts (so it prepares the next one).
@@ -941,22 +978,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _compass.start();
     _compassSub ??= _compass.readings.listen((r) => _compassReading = r);
     // Background operation: keep the tour going with the screen locked / phone in a
-    // pocket. On Android a foreground LOCATION service (with an ongoing notification)
-    // holds the process alive so GPS, the WebSocket and TTS keep running; on iOS we
-    // enable background location updates. Either way the existing main-isolate logic
-    // (heartbeat, watchdog, speech queue) keeps ticking without a second isolate.
+    // pocket. A foreground LOCATION service (started below) holds the process alive so
+    // GPS, the WebSocket and TTS keep running, and shows a tour card with a Pause
+    // button in the shade. The existing main-isolate logic (heartbeat, watchdog,
+    // speech queue) keeps ticking without a second isolate.
+    _paused = false;
+    await _startForegroundService();
+    // On iOS we still need AppleSettings to allow background location updates.
     final LocationSettings settings;
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-      settings = AndroidSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
-        foregroundNotificationConfig: ForegroundNotificationConfig(
-          notificationTitle: l.bgNotifTitle,
-          notificationText: l.bgNotifText,
-          enableWakeLock: true,
-          setOngoing: true,
-        ),
-      );
+      settings = AndroidSettings(accuracy: LocationAccuracy.high, distanceFilter: 5);
     } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
       settings = AppleSettings(
         accuracy: LocationAccuracy.high,
@@ -1013,7 +1044,103 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _compass.stop();
     _compassReading = null;
     _recentCourses.clear();
+    _paused = false;
+    _stopForegroundService(); // drops the shade card + frees the foreground service
     setState(() {});
+  }
+
+  // ---- foreground service (background operation + shade card) -------------
+  // The notification with the Pause button lives in a foreground LOCATION service;
+  // while it runs the OS keeps our process alive with the screen off and grants
+  // background location. Android/iOS only — a no-op on web.
+  Future<void> _startForegroundService() async {
+    if (kIsWeb) return;
+    final l = AppLocalizations.of(context)!;
+    // Android 13+ needs the notification permission for the card to show; the
+    // service still runs without it. Aggressive-battery OEMs (Samsung et al.) can
+    // freeze even a foreground service, so nudge battery-optimization off once.
+    final perm = await FlutterForegroundTask.checkNotificationPermission();
+    if (perm != NotificationPermission.granted) {
+      await FlutterForegroundTask.requestNotificationPermission();
+    }
+    if (!_askedBatteryOpt) {
+      _askedBatteryOpt = true;
+      try {
+        if (!await FlutterForegroundTask.isIgnoringBatteryOptimizations) {
+          await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+        }
+      } catch (_) {/* best-effort; not fatal */}
+    }
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId: 'ai_guide_tour',
+        channelName: l.bgNotifTitle,
+        channelImportance: NotificationChannelImportance.LOW,
+        priority: NotificationPriority.LOW,
+        onlyAlertOnce: true,
+      ),
+      iosNotificationOptions: const IOSNotificationOptions(),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        eventAction: ForegroundTaskEventAction.nothing(),
+        allowWakeLock: true,
+        autoRunOnBoot: false,
+        allowWifiLock: true,
+      ),
+    );
+    if (await FlutterForegroundTask.isRunningService) return;
+    await FlutterForegroundTask.startService(
+      serviceId: 4242,
+      serviceTypes: [ForegroundServiceTypes.location],
+      notificationTitle: l.bgNotifTitle,
+      notificationText: l.bgNotifText,
+      notificationButtons: [NotificationButton(id: _kFgPauseAction, text: l.bgPause)],
+      callback: guideServiceCallback,
+    );
+  }
+
+  Future<void> _stopForegroundService() async {
+    if (kIsWeb) return;
+    try {
+      if (await FlutterForegroundTask.isRunningService) {
+        await FlutterForegroundTask.stopService();
+      }
+    } catch (_) {/* already gone */}
+  }
+
+  // Re-render the shade card to reflect play/paused state (button label + text).
+  Future<void> _updateFgNotification() async {
+    if (kIsWeb || !mounted) return;
+    final l = AppLocalizations.of(context)!;
+    try {
+      if (!await FlutterForegroundTask.isRunningService) return;
+      await FlutterForegroundTask.updateService(
+        notificationTitle: l.bgNotifTitle,
+        notificationText: _paused ? l.bgNotifPaused : l.bgNotifText,
+        notificationButtons: [
+          NotificationButton(id: _kFgPauseAction, text: _paused ? l.bgResume : l.bgPause),
+        ],
+      );
+    } catch (_) {/* service may have just stopped */}
+  }
+
+  // A notification button press arrives here from the service isolate.
+  void _onFgServiceData(Object data) {
+    if (data == _kFgPauseAction) _togglePause();
+  }
+
+  // Pause: stop talking now and let the queue accumulate without acking `played`,
+  // so the server's paced producer waits. Resume: drain the queue, which re-acks.
+  Future<void> _togglePause() async {
+    if (_paused) {
+      setState(() => _paused = false);
+      await _updateFgNotification();
+      _speakNext(); // resume — play whatever queued up while paused
+    } else {
+      setState(() => _paused = true);
+      await _tts.stop();
+      if (mounted) setState(() => _speaking = false);
+      await _updateFgNotification();
+    }
   }
 
   void _ask() {
@@ -1126,6 +1253,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _heartbeat?.cancel();
     _watchdog?.cancel();
     _audioSub?.cancel();
+    if (!kIsWeb) {
+      FlutterForegroundTask.removeTaskDataCallback(_onFgServiceData);
+      _stopForegroundService();
+    }
     _tts.stop();
     _rec.dispose();
     _ch?.sink.close();

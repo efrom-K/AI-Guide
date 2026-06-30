@@ -232,21 +232,35 @@ MVP-позиция; реальный бэкстоп — **спенд-капы**,
 останавливаются вне видимости). Ядро агента и серверная часть **не тронуты**.
 
 Что сделано (клиент):
+- **FG-сервис с карточкой и кнопкой «Пауза» (обновление, см. ниже)** — изначально использовали
+  встроенное в `geolocator` уведомление (`foregroundNotificationConfig`), но оно **не умеет
+  кнопки-действия**. Перешли на **`flutter_foreground_task`** (`^9.2.2`): он держит процесс
+  живым FG-сервисом типа `location`, а `geolocator` стримит координаты под ним (плагинная
+  AndroidSettings без своего уведомления). Уведомление в шторке: заголовок «AI Audio Guide»,
+  текст «Идёт экскурсия» / «Экскурсия на паузе», иконка приложения, **кнопка Пауза/Продолжить**.
 - **Android-манифест**: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_LOCATION`,
-  `ACCESS_BACKGROUND_LOCATION` (опц.), `POST_NOTIFICATIONS`, `WAKE_LOCK`. Сам сервис
-  (`GeolocatorLocationService`, `foregroundServiceType="location"`) объявляет плагин — свой не нужен.
-- **`_startGps`** (`main.dart`): вместо базового `LocationSettings` — платформенные. Android:
-  `AndroidSettings` с `foregroundNotificationConfig` (постоянное уведомление + `enableWakeLock`).
-  iOS: `AppleSettings(allowBackgroundLocationUpdates:true, pauseLocationUpdatesAutomatically:false,
-  activityType: fitness)`. На `Stop` поток отменяется → сервис и уведомление исчезают.
-- **`_initTts`**: на iOS ставим audio-session `playback` (+ `duckOthers`, `allowBluetoothA2DP`,
+  `ACCESS_BACKGROUND_LOCATION` (опц.), `POST_NOTIFICATIONS`, `WAKE_LOCK`,
+  `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`. Сервис `com.pravera.flutter_foreground_task.service.
+  ForegroundService` с `foregroundServiceType="location"` объявлен **в нашем манифесте** (плагин
+  его не декларирует, только receivers).
+- **Кнопка Пауза** (`main.dart`): top-level `@pragma('vm:entry-point') guideServiceCallback` +
+  `_GuideServiceHandler` (фоновый изолят) форвардит нажатие через `sendDataToMain`; UI-изолят
+  ловит через `addTaskDataCallback` → `_togglePause()`. **Семантика паузы (чисто клиент):** на
+  паузе TTS останавливается, очередь копится, но `played` **не ack-ается** → серверный paced-
+  продюсер ждёт; на «Продолжить» очередь сливается и ack возобновляется. Стартуем сервис в
+  `_startForegroundService` (запрос notification-permission + разовый нудж battery-opt), стопаем в
+  `_stopWalk`/`dispose`. `initCommunicationPort()` в `main()`.
+- **`_startGps`** (`main.dart`): iOS остаётся на `AppleSettings(allowBackgroundLocationUpdates:
+  true, pauseLocationUpdatesAutomatically:false, activityType: fitness)`; Android — `AndroidSettings`
+  без своего уведомления (его даёт FG-сервис). На `Stop` поток + сервис + карточка исчезают.
+- **`_initTts`**: на iOS audio-session `playback` (+ `duckOthers`, `allowBluetoothA2DP`,
   `allowAirPlay`, mode `spokenAudio`) — озвучка играет в наушник при локе и приглушает музыку.
 - **iOS `Info.plist`**: `UIBackgroundModes = [location, audio]` + `NSLocationAlwaysAndWhenInUse…`.
-- **Локализация уведомления**: `bgNotifTitle`/`bgNotifText` в 8 ARB (`flutter gen-l10n`
-  перегенерил `lib/l10n/app_localizations.dart` — он в гите).
+- **Локализация уведомления**: `bgNotifTitle`/`bgNotifText`/`bgNotifPaused`/`bgPause`/`bgResume`
+  в 8 ARB (`flutter gen-l10n` перегенерил `lib/l10n/app_localizations.dart` — он в гите).
 
-Проверки: `flutter analyze` чисто, `flutter test` зелёный. (Полевой тест на реальном телефоне с
-заблокированным экраном — за пользователем.)
+Проверки: `flutter analyze` чисто, `flutter test` зелёный, release-APK собирается. (Полевой тест
+на реальном телефоне с заблокированным экраном — за пользователем.)
 
 Гочи/ограничения:
 - **Постоянное уведомление обязательно** на Android для FG-сервиса — убрать нельзя, это плата
