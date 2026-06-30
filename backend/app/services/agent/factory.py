@@ -86,6 +86,24 @@ def _area_llm():
     return None
 
 
+def _name_localizer():
+    """Translates place TITLES to the session language (cheap, cached). LLM-backed on
+    the real backends; the no-LLM default (deterministic romanization) is used for the
+    offline/heuristic path."""
+    from app.services.agent.name_localizer import NameLocalizer
+
+    backend = settings.agent_backend
+    if backend == "openai":
+        from app.services.llm.client import OpenAICompatLLM
+
+        return NameLocalizer(OpenAICompatLLM())
+    if backend == "anthropic":
+        from app.services.llm.client import AnthropicLLM
+
+        return NameLocalizer(AnthropicLLM())
+    return NameLocalizer()
+
+
 def _planner() -> Planner:
     """Forms the per-area story arc. LLM-backed in production; deterministic
     (names the area + generic outline) for the offline/heuristic path."""
@@ -115,6 +133,7 @@ def build_orchestrator(store: StateStore | None = None) -> Orchestrator:
         enrich_timeout_s=settings.enrich_timeout_s if web else None,
         area_llm=_area_llm(),
         planner=_planner(),
+        name_localizer=_name_localizer(),
     )
     return Orchestrator(
         _discovery(), pipeline, companion, store or default_store(), geocoder=_geocoder()

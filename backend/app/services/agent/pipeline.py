@@ -35,7 +35,7 @@ from app.shared.schemas import (
     Significance,
 )
 
-from .languages import display_name
+from .name_localizer import NameLocalizer
 from .narrator import Narrator, split_hook
 from .scorer import Scorer
 from .significance import significance_from_weight
@@ -78,6 +78,7 @@ class TextPipeline:
         enrich_timeout_s: float | None = None,
         area_llm=None,  # an LLM with web_facts() for area enrichment (optional)
         planner=None,  # a Planner that forms the story arc (optional)
+        name_localizer=None,  # translates titles to the session language (optional)
     ) -> None:
         self.scorer = scorer
         self.narrator = narrator
@@ -88,6 +89,8 @@ class TextPipeline:
         self.enrich_timeout_s = enrich_timeout_s
         self.area_llm = area_llm
         self.planner = planner
+        # No-LLM default: deterministic exonym/romanization (offline + tests).
+        self.name_localizer = name_localizer or NameLocalizer()
         self._warm_tasks: set[asyncio.Task] = set()  # hold refs to background warms
 
     def warm_ahead(
@@ -176,11 +179,12 @@ class TextPipeline:
         )
         if chosen is None:
             return StepResult("", ScorerOutput(), None, None)
-        # Localize the title to the session language (name:<lang> -> name:en -> raw).
-        # One swap here feeds BOTH the spoken name (narrator) and the displayed title
-        # (StepResult.place -> place_name frame) — and st.last_place downstream.
+        # Localize the title to the session language (exonym, else translate the
+        # common-noun parts). One swap here feeds BOTH the spoken name (narrator) and
+        # the displayed title (StepResult.place -> place_name frame), and st.last_place.
         place = chosen.place.model_copy(
-            update={"name": display_name(chosen.place.tags, chosen.place.name, lang)}
+            update={"name": await self.name_localizer.localize(
+                chosen.place.tags, chosen.place.name, lang)}
         )
         sig = significance_from_weight(chosen.type_weight, chosen.facts_available)
         raw = await self.narrator.narrate(
@@ -224,8 +228,10 @@ class TextPipeline:
         cached facts; the narrator adds a fresh detail, avoiding HISTORY."""
         lang = language or self.language
         # Re-localize in case the language changed since this place was first narrated
-        # (idempotent when it didn't). Facts cache is keyed by id, so this is free.
-        place = place.model_copy(update={"name": display_name(place.tags, place.name, lang)})
+        # (idempotent when it didn't); cached, so a repeat is free.
+        place = place.model_copy(
+            update={"name": await self.name_localizer.localize(place.tags, place.name, lang)}
+        )
         addr = address or Address()
         facts = self.cache.get(place.id, lang)
         if facts is None:

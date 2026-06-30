@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config import settings
 from app.services.agent.factory import build_orchestrator
-from app.services.agent.languages import display_name, normalize, stt_unclear
+from app.services.agent.languages import normalize, stt_unclear
 from app.services.agent.orchestrator import Orchestrator, OrchestratorOutput, merge_patch
 from app.services.llm.client import METER, SESSION_ID
 from app.services.stt.stt import STTClient, build_stt
@@ -253,20 +253,25 @@ class _SessionRuntime:
             return
         if not places:
             return
-        # Localize the pin labels to the session language, same as the narration title.
+        # Localize the pin labels to the session language, same as the narration title
+        # (one cached batch call; romanizes anything it can't translate in time).
         try:
             language = (await self.orch.store.load(self.session_id)).language
         except Exception:
-            language = None
+            language = "ru"
+        loc = self.orch.pipeline.name_localizer
+        pairs = [(p.tags, p.name) for p in places]
+        names = loc.localize_batch(pairs, language)  # fast: cache + romanize, no LLM
+        loc.warm_batch(pairs, language)  # background: translate uncached -> next frame
         items = [
             {
                 "id": p.id,
-                "name": display_name(p.tags, p.name, language),
+                "name": name,
                 "category": p.category,
                 "lat": p.location.lat,
                 "lon": p.location.lon,
             }
-            for p in places
+            for p, name in zip(places, names, strict=True)
         ]
         with contextlib.suppress(Exception):
             await self.send_json({"type": "places", "items": items})
