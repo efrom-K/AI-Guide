@@ -43,6 +43,12 @@ from .scorer import Scorer
 from .significance import at_least, significance_from_weight
 
 log = logging.getLogger("aiguide.agent")
+if not log.handlers:  # emit decision logs regardless of uvicorn's config (cf. client.py)
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
 
 @dataclass

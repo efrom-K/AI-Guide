@@ -114,6 +114,12 @@ def fingerprint(candidates: list[Candidate], cache=None, language: str = "ru") -
 
 
 log = logging.getLogger("aiguide.agent")
+if not log.handlers:  # emit decision logs regardless of uvicorn's config (cf. client.py)
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
