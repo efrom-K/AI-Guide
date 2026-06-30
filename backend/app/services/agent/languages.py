@@ -170,6 +170,79 @@ _STT_UNCLEAR: dict[str, str] = {
 }
 
 
+# Deterministic one-line "you're passing X" mention, emitted AS-IS (no LLM) as a
+# guaranteed floor when the model wrongly returns silence for a close, named object
+# the walker is right beside. SIDE is used only when known: left/right arrive only at
+# high gaze confidence; ahead/behind are knowable from the GPS course; else "near".
+_PASSING_MENTION: dict[str, dict[str, str]] = {
+    "ru": {
+        "left": "Слева — {name}.",
+        "right": "Справа — {name}.",
+        "ahead": "Прямо по курсу — {name}.",
+        "behind": "Ты только что прошёл {name}.",
+        "near": "Тут рядом — {name}.",
+    },
+    "en": {
+        "left": "On your left — {name}.",
+        "right": "On your right — {name}.",
+        "ahead": "Just ahead — {name}.",
+        "behind": "You just passed {name}.",
+        "near": "Right here — {name}.",
+    },
+    "es": {
+        "left": "A tu izquierda — {name}.",
+        "right": "A tu derecha — {name}.",
+        "ahead": "Justo delante — {name}.",
+        "behind": "Acabas de pasar {name}.",
+        "near": "Aquí al lado — {name}.",
+    },
+    "fr": {
+        "left": "Sur ta gauche — {name}.",
+        "right": "Sur ta droite — {name}.",
+        "ahead": "Droit devant — {name}.",
+        "behind": "Tu viens de passer {name}.",
+        "near": "Juste ici — {name}.",
+    },
+    "de": {
+        "left": "Links — {name}.",
+        "right": "Rechts — {name}.",
+        "ahead": "Direkt voraus — {name}.",
+        "behind": "Du bist gerade an {name} vorbei.",
+        "near": "Hier nebenan — {name}.",
+    },
+    "it": {
+        "left": "Alla tua sinistra — {name}.",
+        "right": "Alla tua destra — {name}.",
+        "ahead": "Proprio davanti — {name}.",
+        "behind": "Hai appena passato {name}.",
+        "near": "Qui accanto — {name}.",
+    },
+    "pt": {
+        "left": "À tua esquerda — {name}.",
+        "right": "À tua direita — {name}.",
+        "ahead": "Logo à frente — {name}.",
+        "behind": "Acabaste de passar {name}.",
+        "near": "Aqui ao lado — {name}.",
+    },
+    "zh": {
+        "left": "左边是{name}。",
+        "right": "右边是{name}。",
+        "ahead": "正前方是{name}。",
+        "behind": "你刚经过{name}。",
+        "near": "旁边就是{name}。",
+    },
+}
+
+
+def passing_mention(code: str | None, name: str, side: str | None) -> str:
+    """A deterministic, localized one-line mention of an object the walker is passing.
+    Emitted verbatim (no LLM) so a close named object is never dead air, even when the
+    model silences it. SIDE keys: left|right|ahead|behind, else a neutral 'near'."""
+    table = _PASSING_MENTION.get(normalize(code), _PASSING_MENTION[FALLBACK])
+    key = side if side in ("left", "right", "ahead", "behind") else "near"
+    return table[key].format(name=name)
+
+
 def bridges(code: str | None) -> tuple[str, ...]:
     """Spoken-verbatim 'let's move on' bridges in the session language."""
     return _BRIDGES.get(normalize(code), _BRIDGES[FALLBACK])

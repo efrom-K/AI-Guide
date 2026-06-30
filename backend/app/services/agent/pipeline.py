@@ -7,6 +7,7 @@ Stage 3). The caller owns seen-list and history across ticks.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 
 from app.config import settings
@@ -35,10 +36,13 @@ from app.shared.schemas import (
     Significance,
 )
 
+from .languages import passing_mention
 from .name_localizer import NameLocalizer
 from .narrator import Narrator, split_hook
 from .scorer import Scorer
-from .significance import significance_from_weight
+from .significance import at_least, significance_from_weight
+
+log = logging.getLogger("aiguide.agent")
 
 
 @dataclass
@@ -211,6 +215,30 @@ class TextPipeline:
             )
         )
         text, hook = split_hook(raw)
+        # Guarantee a close, named object is never dead air. DeepSeek sometimes ignores
+        # the "passing -> never silent" rule (especially with empty facts), and a
+        # silenced passing object would then be gated out forever (its facts-aware
+        # fingerprint never flips when no facts ever cache). If the model silenced a
+        # named, not-yet-told passing object, emit a deterministic localized one-liner.
+        # Gate the floor at MEDIUM+ so we name genuinely notable objects (monuments,
+        # churches, parks…) but never inflate ordinary places or shops (LOW/SKIP) —
+        # the "no ad-speak / don't inflate" invariant.
+        floored = False
+        if (
+            not text
+            and passing
+            and place.name
+            and at_least(sig, Significance.MEDIUM)
+            and not any(place.name in h for h in (history or []))
+        ):
+            text = passing_mention(lang, place.name, chosen.side)
+            floored = True
+        log.info(
+            "step place=%r cat=%s sig=%s facts=%s side=%s passing=%s -> %s",
+            place.name, place.category, sig.value, chosen.facts_available,
+            chosen.side, passing,
+            "floor" if floored else ("text" if text else "silence"),
+        )
         return StepResult(text, ScorerOutput(), place, sig, next_hook=hook)
 
     async def elaborate(

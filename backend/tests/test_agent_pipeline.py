@@ -207,3 +207,32 @@ def test_pipeline_elaborate_uses_cached_facts():
     place = Place(id="p", name="Место", category="historic", location=GeoPoint(lat=1, lon=2))
     text = asyncio.run(pipe.elaborate(place, Significance.MEDIUM, history=[]))
     assert "факт о месте" in text  # cached facts reach the narrator
+
+
+# -- deterministic floor mention (a close object is never dead air) ------------
+def test_pipeline_step_floors_silenced_passing_object():
+    # DeepSeek sometimes ignores "passing -> never silent"; for a close named object
+    # the pipeline must still emit a deterministic one-line mention.
+    pipe = TextPipeline(HeuristicScorer(), LLMNarrator(FakeLLM(text_response="[SILENCE]")),
+                        MockEnricher({}))
+    cand = _candidate("m", "Маяк", "lighthouse", 0.8)
+    out = asyncio.run(pipe.step([cand], seen=[], history=[], passing=True))
+    assert out.place is not None and out.place.id == "m"
+    assert out.text and "Маяк" in out.text  # forced floor mention names the object
+
+
+def test_pipeline_step_no_floor_when_not_passing():
+    pipe = TextPipeline(HeuristicScorer(), LLMNarrator(FakeLLM(text_response="[SILENCE]")),
+                        MockEnricher({}))
+    cand = _candidate("m", "Маяк", "lighthouse", 0.8)
+    out = asyncio.run(pipe.step([cand], seen=[], history=[], passing=False))
+    assert out.text == ""  # not passing -> the model's silence stands
+
+
+def test_pipeline_step_no_floor_when_already_told():
+    pipe = TextPipeline(HeuristicScorer(), LLMNarrator(FakeLLM(text_response="[SILENCE]")),
+                        MockEnricher({}))
+    cand = _candidate("m", "Маяк", "lighthouse", 0.8)
+    out = asyncio.run(pipe.step([cand], seen=[], history=["Старый Маяк у входа в порт."],
+                                passing=True))
+    assert out.text == ""  # already named in history -> no repeat floor mention

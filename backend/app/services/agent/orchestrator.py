@@ -17,6 +17,8 @@ FSM (states x events -> next), incl. degradation paths from the review:
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -109,6 +111,38 @@ def fingerprint(candidates: list[Candidate], cache=None, language: str = "ru") -
         f"{c.place.id}:{int(cache.get(c.place.id, language) is not None)}"
         for c in sorted(candidates, key=lambda c: c.place.id)
     )
+
+
+log = logging.getLogger("aiguide.agent")
+
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _norm_tokens(text: str) -> set[str]:
+    return set(_WORD_RE.findall(text.lower()))
+
+
+def is_near_duplicate(text: str, history: list[str], *, threshold: float = 0.82) -> bool:
+    """True if `text` essentially repeats a recent narration. A code-level safety net
+    over the model's imperfect obedience to the no-repeat rule: catches verbatim and
+    near-verbatim paragraphs (token-set Jaccard >= threshold, or near-full containment
+    of the shorter in the longer). Short lines (bridges, one-line floor mentions) are
+    never flagged — they're too small to judge and are deduped by name elsewhere."""
+    toks = _norm_tokens(text)
+    if len(toks) < 6:
+        return False
+    for h in history:
+        ht = _norm_tokens(h)
+        if not ht:
+            continue
+        inter = len(toks & ht)
+        union = len(toks | ht)
+        if union and inter / union >= threshold:
+            return True
+        smaller = min(len(toks), len(ht))
+        if smaller and inter / smaller >= 0.92:
+            return True
+    return False
 
 
 def merge_patch(base: ControlPatch, patch: ControlPatch) -> ControlPatch:
@@ -230,6 +264,12 @@ class Orchestrator:
         except Exception:
             return await self._finish(st, State.ERROR, "error")
 
+        # Code-level no-repeat net: if the model echoed something already said, drop it
+        # to silence rather than emit a verbatim/near-verbatim paragraph again.
+        if out.text and out.place and is_near_duplicate(out.text, st.narration_history):
+            log.info("suppress-repeat step place=%r", out.place.name)
+            return await self._continue_monologue(st, heading, pace, expanded=result.expanded)
+
         if out.text and out.place:
             st.narration_history = (st.narration_history + [out.text])[-_HISTORY_CAP:]
             st.seen_place_ids = (st.seen_place_ids + [out.place.id])[-_SEEN_CAP:]
@@ -242,6 +282,11 @@ class Orchestrator:
             plan.told = (plan.told + [out.place.name])[-_TOLD_CAP:]  # arc ledger (anti-repeat)
             plan.next_hook = out.next_hook  # baton: weave this into the next paragraph
             state = State.SWITCHING if switching else State.NARRATING
+            log.info(
+                "narrate step place=%r sig=%s switching=%s",
+                out.place.name,
+                out.significance.value if out.significance else None, switching,
+            )
             return await self._finish(
                 st, state, "narration", out.text, out.place, out.significance
             )
@@ -249,6 +294,8 @@ class Orchestrator:
         # Passing object yielded silence (cold facts / nothing to say). The fp is
         # facts-aware, so once warm_ahead caches its facts the gate re-opens and the
         # next tick narrates it. Carry the area spine meanwhile.
+        log.info("silence step place=%r (deterministic floor did not apply)",
+                 out.place.name if out.place else None)
         return await self._continue_monologue(st, heading, pace, expanded=result.expanded)
 
     # -- area resolution (general -> specific spine) ------------------------ #
@@ -362,9 +409,14 @@ class Orchestrator:
                 )
             except Exception:
                 text = ""
+            if text and is_near_duplicate(text, st.narration_history):
+                log.info("suppress-repeat elaborate place=%r", st.last_place.name)
+                text = ""  # a re-phrased repeat — treat as nothing-to-add
             if text:
                 st.elaboration_count += 1
                 st.narration_history = (st.narration_history + [text])[-_HISTORY_CAP:]
+                log.info("narrate elaborate place=%r n=%d",
+                         st.last_place.name, st.elaboration_count)
                 return await self._finish(
                     st, State.NARRATING, "narration", text,
                     st.last_place, st.last_significance,
@@ -454,6 +506,11 @@ class Orchestrator:
                 language=st.language,
             )
         except Exception:
+            return ""
+        if text and is_near_duplicate(text, st.narration_history):
+            # The street/district beat repeated an earlier one verbatim — the dominant
+            # "повторял факты про улицы" symptom. Drop it; the cascade descends a level.
+            log.info("suppress-repeat area topic=%r", topic)
             return ""
         if text:
             st.area_beats += 1

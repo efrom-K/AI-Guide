@@ -71,3 +71,16 @@ def test_transliterate_romanizes_cyrillic():
     # Latin / digits / punctuation pass through untouched.
     assert lang.transliterate("Cafe 21") == "Cafe 21"
     assert lang.transliterate("Tverskaya") == "Tverskaya"
+
+
+def test_passing_mention_localized_and_side_keyed():
+    # The deterministic floor mention is emitted verbatim, so it must be localized and
+    # keyed by SIDE (left/right only arrive at high gaze; else a neutral 'near').
+    assert lang.passing_mention("ru", "Звонница", "left") == "Слева — Звонница."
+    assert lang.passing_mention("ru", "Звонница", None) == "Тут рядом — Звонница."
+    assert "Belfry" in lang.passing_mention("en", "Belfry", "right")
+    # an unknown side degrades to the neutral 'near' phrasing
+    assert "Звонница" in lang.passing_mention("ru", "Звонница", "sideways")
+    # an unknown language falls back to English
+    assert lang.passing_mention("xx", "Tower", "ahead") == \
+        lang.passing_mention("en", "Tower", "ahead")

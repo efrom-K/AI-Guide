@@ -4,7 +4,13 @@ from pathlib import Path
 from app.config import settings
 from app.services.agent.companion import HeuristicCompanion
 from app.services.agent.narrator import TemplateNarrator
-from app.services.agent.orchestrator import _BEATS_PER_LEVEL, Orchestrator, State, merge_patch
+from app.services.agent.orchestrator import (
+    _BEATS_PER_LEVEL,
+    Orchestrator,
+    State,
+    is_near_duplicate,
+    merge_patch,
+)
 from app.services.agent.pipeline import TextPipeline
 from app.services.agent.scorer import HeuristicScorer
 from app.services.enrichment.enricher import MockEnricher
@@ -323,25 +329,36 @@ def test_area_cascade_bounded_per_level_then_silent():
     asyncio.run(run())
 
 
-def test_passing_object_narrated_once_facts_warm_not_burned_by_gate():
-    """Issue: a passing object whose facts were cold when it entered the bubble must
-    NOT be permanently gated out. The facts-aware fingerprint re-opens the gate when
-    warm_ahead caches facts, so the guide reliably picks up an object you walk up to
-    (the "10 минут вокруг памятника, так и не рассказал" bug)."""
-    p = _place("mon", "Памятник Пушкину", "monument")  # at HERE
+def test_passing_notable_object_floored_when_facts_cold_not_left_silent():
+    """A passing, notable (MEDIUM+) object whose facts are cold/empty must still be
+    NAMED on first contact via the deterministic floor mention — never left silent and
+    never burned out by the gate (the "10 минут вокруг памятника, так и не рассказал"
+    bug). The model can silence it; the code floor guarantees a one-liner anyway."""
+    p = _place("mon", "Памятник Пушкину", "monument")  # weight 0.9 -> HIGH (cold)
 
     async def run():
         orch = _orch([p], facts={})  # cold: no facts on the first approach
         near = GeoPoint(lat=HERE.lat + 0.00035, lon=HERE.lon)  # ~39 m: in the bubble
-
-        # Tick 1: facts cold -> TemplateNarrator stays silent; object NOT narrated.
         o1 = await orch.on_position("s", near, Heading(), Pace.SLOW)
-        assert o1.place_id != "mon"
-
-        # warm_ahead caches facts between ticks -> the facts-aware fingerprint changes,
-        # re-opening the gate (a plain id fingerprint would have stayed burned).
-        orch.pipeline.cache.put("mon", "Памятник поставлен в 1880 году.")
-        o2 = await orch.on_position("s", near, Heading(), Pace.SLOW)
-        assert o2.kind == "narration" and o2.place_id == "mon"
+        # named immediately via the floor mention, even with no facts and a silent model
+        assert o1.kind == "narration" and o1.place_id == "mon"
+        assert "Памятник Пушкину" in o1.text
 
     asyncio.run(run())
+
+
+def test_is_near_duplicate_catches_verbatim_and_near_repeats():
+    hist = ["Этот старый маяк построили в девятнадцатом веке для входа кораблей в порт."]
+    # verbatim repeat
+    assert is_near_duplicate(hist[0], hist)
+    # near-verbatim: a single word swapped is still a repeat
+    assert is_near_duplicate(
+        "Этот старый маяк построили в девятнадцатом веке для входа кораблей в гавань.", hist
+    )
+    # containment: a shorter line fully inside an earlier longer one
+    assert is_near_duplicate("Этот старый маяк построили в девятнадцатом веке.", hist)
+    # genuinely new content is NOT a duplicate
+    assert not is_near_duplicate("Совсем другая история про реку, мост и старый рынок рядом.", hist)
+    # short lines (floor mentions, bridges) are never flagged
+    assert not is_near_duplicate("Тут рядом — Маяк.", hist)
+    assert not is_near_duplicate("Любой текст здесь.", [])  # empty history
